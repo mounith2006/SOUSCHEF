@@ -1,1 +1,15 @@
+# Secrets
+.env
+*.env.local
 
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Frontend
+node_modules/
+dist/
+
+# Editor files
+.vscode/
