@@ -1,1 +1,286 @@
-[]
+[
+    {
+        "id": "demo-tomato-pasta",
+        "source": "local-demo",
+        "source_recipe_id": null,
+        "title": "Tomato Pasta",
+        "servings": 2,
+        "prep_time_minutes": 10,
+        "cook_time_minutes": 20,
+        "ingredients": [
+            {
+                "name": "Pasta",
+                "quantity": 200,
+                "unit": "g",
+                "note": "any dried pasta"
+            },
+            {
+                "name": "Tomato sauce",
+                "quantity": 250,
+                "unit": "ml",
+                "note": ""
+            },
+            {
+                "name": "Olive oil",
+                "quantity": 1,
+                "unit": "tbsp",
+                "note": ""
+            },
+            {
+                "name": "Salt",
+                "quantity": 1,
+                "unit": "tsp",
+                "note": "for the pasta water"
+            }
+        ],
+        "steps": [
+            {
+                "step_number": 1,
+                "instruction": "Bring a pot of water to a boil and add one teaspoon of salt.",
+                "duration_seconds": 480,
+                "temperature": null,
+                "ingredients_used": [
+                    "Salt"
+                ]
+            },
+            {
+                "step_number": 2,
+                "instruction": "Add 200 grams of pasta and cook until tender.",
+                "duration_seconds": 600,
+                "temperature": null,
+                "ingredients_used": [
+                    "Pasta"
+                ]
+            },
+            {
+                "step_number": 3,
+                "instruction": "Heat one tablespoon of olive oil in a pan over medium heat.",
+                "duration_seconds": 60,
+                "temperature": {
+                    "value": "medium",
+                    "unit": "heat"
+                },
+                "ingredients_used": [
+                    "Olive oil"
+                ]
+            },
+            {
+                "step_number": 4,
+                "instruction": "Add 250 millilitres of tomato sauce and simmer.",
+                "duration_seconds": 300,
+                "temperature": {
+                    "value": "low",
+                    "unit": "heat"
+                },
+                "ingredients_used": [
+                    "Tomato sauce"
+                ]
+            },
+            {
+                "step_number": 5,
+                "instruction": "Drain the pasta, combine it with the sauce, and serve.",
+                "duration_seconds": 60,
+                "temperature": null,
+                "ingredients_used": [
+                    "Pasta",
+                    "Tomato sauce"
+                ]
+            }
+        ]
+    },
+    {
+        "id": "demo-vegetable-omelette",
+        "source": "local-demo",
+        "source_recipe_id": null,
+        "title": "Vegetable Omelette",
+        "servings": 1,
+        "prep_time_minutes": 10,
+        "cook_time_minutes": 8,
+        "ingredients": [
+            {
+                "name": "Eggs",
+                "quantity": 2,
+                "unit": "",
+                "note": ""
+            },
+            {
+                "name": "Milk",
+                "quantity": 1,
+                "unit": "tbsp",
+                "note": ""
+            },
+            {
+                "name": "Onion",
+                "quantity": 0.25,
+                "unit": "cup",
+                "note": "finely chopped"
+            },
+            {
+                "name": "Bell pepper",
+                "quantity": 0.25,
+                "unit": "cup",
+                "note": "diced"
+            },
+            {
+                "name": "Butter",
+                "quantity": 1,
+                "unit": "tsp",
+                "note": ""
+            },
+            {
+                "name": "Salt",
+                "quantity": 0.25,
+                "unit": "tsp",
+                "note": ""
+            }
+        ],
+        "steps": [
+            {
+                "step_number": 1,
+                "instruction": "Whisk two eggs with one tablespoon of milk and one quarter teaspoon of salt.",
+                "duration_seconds": 60,
+                "temperature": null,
+                "ingredients_used": [
+                    "Eggs",
+                    "Milk",
+                    "Salt"
+                ]
+            },
+            {
+                "step_number": 2,
+                "instruction": "Melt one teaspoon of butter in a non-stick pan over medium heat.",
+                "duration_seconds": 60,
+                "temperature": {
+                    "value": "medium",
+                    "unit": "heat"
+                },
+                "ingredients_used": [
+                    "Butter"
+                ]
+            },
+            {
+                "step_number": 3,
+                "instruction": "Cook the onion and bell pepper until softened.",
+                "duration_seconds": 180,
+                "temperature": {
+                    "value": "medium",
+                    "unit": "heat"
+                },
+                "ingredients_used": [
+                    "Onion",
+                    "Bell pepper"
+                ]
+            },
+            {
+                "step_number": 4,
+                "instruction": "Pour in the egg mixture and cook until the edges set.",
+                "duration_seconds": 180,
+                "temperature": {
+                    "value": "medium-low",
+                    "unit": "heat"
+                },
+                "ingredients_used": [
+                    "Eggs",
+                    "Milk"
+                ]
+            },
+            {
+                "step_number": 5,
+                "instruction": "Fold the omelette in half and cook for one more minute before serving.",
+                "duration_seconds": 60,
+                "temperature": {
+                    "value": "medium-low",
+                    "unit": "heat"
+                },
+                "ingredients_used": []
+            }
+        ]
+    },
+    {
+        "id": "demo-baked-garlic-bread",
+        "source": "local-demo",
+        "source_recipe_id": null,
+        "title": "Baked Garlic Bread",
+        "servings": 4,
+        "prep_time_minutes": 5,
+        "cook_time_minutes": 12,
+        "ingredients": [
+            {
+                "name": "French bread",
+                "quantity": 1,
+                "unit": "loaf",
+                "note": "halved lengthwise"
+            },
+            {
+                "name": "Butter",
+                "quantity": 4,
+                "unit": "tbsp",
+                "note": "softened"
+            },
+            {
+                "name": "Garlic",
+                "quantity": 2,
+                "unit": "cloves",
+                "note": "minced"
+            },
+            {
+                "name": "Parsley",
+                "quantity": 1,
+                "unit": "tbsp",
+                "note": "chopped"
+            },
+            {
+                "name": "Salt",
+                "quantity": 0.25,
+                "unit": "tsp",
+                "note": ""
+            }
+        ],
+        "steps": [
+            {
+                "step_number": 1,
+                "instruction": "Preheat the oven to 180 degrees Celsius.",
+                "duration_seconds": 600,
+                "temperature": {
+                    "value": 180,
+                    "unit": "C"
+                },
+                "ingredients_used": []
+            },
+            {
+                "step_number": 2,
+                "instruction": "Mix four tablespoons of butter with two minced garlic cloves, parsley, and one quarter teaspoon of salt.",
+                "duration_seconds": 90,
+                "temperature": null,
+                "ingredients_used": [
+                    "Butter",
+                    "Garlic",
+                    "Parsley",
+                    "Salt"
+                ]
+            },
+            {
+                "step_number": 3,
+                "instruction": "Spread the garlic butter evenly over both bread halves.",
+                "duration_seconds": 60,
+                "temperature": null,
+                "ingredients_used": [
+                    "French bread",
+                    "Butter"
+                ]
+            },
+            {
+                "step_number": 4,
+                "instruction": "Bake the bread until the edges are crisp and golden.",
+                "duration_seconds": 720,
+                "temperature": {
+                    "value": 180,
+                    "unit": "C"
+                },
+                "ingredients_used": [
+                    "French bread"
+                ]
+            }
+        ]
+    }
+]
