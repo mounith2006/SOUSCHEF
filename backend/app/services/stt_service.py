@@ -1,5 +1,12 @@
+import asyncio
+import io
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 import time
+import wave
 from collections import deque
 
 import numpy as np
@@ -10,168 +17,152 @@ import whisper
 SAMPLE_RATE = 16000
 CHANNELS = 1
 
-# Use "small" for better recognition if your machine can handle it.
-# Use "base" if small is too slow.
-DEFAULT_MODEL = "small"
+# CPU-friendly model for deployment.
+DEFAULT_MODEL = "base"
 
-# Recording
 CHUNK_DURATION = 0.1
 MAX_RECORDING_DURATION = 60.0
 
-# Silence detection
-# Longer silence prevents quiet pauses from cutting off words.
 SILENCE_DURATION = 1.5
-
-# Background-noise calibration
 NOISE_CALIBRATION_DURATION = 0.7
 
-# VAD thresholds
-#
-# Speech must be clearly above the noise floor to START.
-# Once speech has started, we use a lower threshold so quiet
-# words do not accidentally look like silence.
 SPEECH_MULTIPLIER = 2.5
 CONTINUE_MULTIPLIER = 1.15
 
-# Absolute minimum thresholds.
-# These prevent the threshold from becoming absurdly sensitive
-# when the microphone is extremely quiet.
 MIN_START_THRESHOLD = 0.0025
 MIN_CONTINUE_THRESHOLD = 0.0012
 
-# Require speech to persist briefly before starting.
 MIN_SPEECH_DURATION = 0.15
-
-# Keep audio from immediately before speech detection.
-# This helps preserve the first consonants/syllables.
 PRE_BUFFER_DURATION = 0.5
-
-# Smooth energy over several chunks.
 ENERGY_SMOOTHING_CHUNKS = 3
 
 
+class STTUnavailableError(Exception):
+    """Raised when local speech-to-text cannot process the audio."""
+
+
 class STTService:
-    def __init__(self, model_name: str = DEFAULT_MODEL):
+    def __init__(
+        self,
+        model_name: str = DEFAULT_MODEL,
+        language: str = "en",
+    ):
         print(f"Loading Whisper model: {model_name}...")
+
         self.model = whisper.load_model(model_name)
+
+        self.language = language
+
         print("Whisper loaded.")
 
-    # ---------------------------------------------------------
-    # AUDIO
-    # ---------------------------------------------------------
+    # =========================================================
+    # LOCAL MICROPHONE / VAD
+    # =========================================================
 
     def _get_audio_energy(self, audio: np.ndarray) -> float:
-        """Calculate RMS energy of an audio chunk."""
         if audio.size == 0:
             return 0.0
 
         audio = audio.astype(np.float32)
 
-        return float(np.sqrt(np.mean(np.square(audio))))
+        return float(
+            np.sqrt(np.mean(np.square(audio)))
+        )
 
     def _calibrate_noise(
         self,
         stream,
         chunk_size: int,
     ) -> float:
-        """
-        Estimate background noise.
-
-        Median energy is used instead of average energy so that
-        one cough, click, pan noise, etc. doesn't destroy calibration.
-        """
 
         print("🔇 Calibrating background noise...")
 
         energies = []
 
         calibration_chunks = int(
-            NOISE_CALIBRATION_DURATION / CHUNK_DURATION
+            NOISE_CALIBRATION_DURATION
+            / CHUNK_DURATION
         )
 
         for _ in range(calibration_chunks):
-            audio_chunk, overflowed = stream.read(chunk_size)
+
+            audio_chunk, overflowed = stream.read(
+                chunk_size
+            )
 
             if overflowed:
                 print("⚠️ Audio overflow during calibration")
 
             audio_chunk = audio_chunk.flatten()
 
-            energy = self._get_audio_energy(audio_chunk)
+            energy = self._get_audio_energy(
+                audio_chunk
+            )
 
             energies.append(energy)
 
         if not energies:
             return 0.001
 
-        noise_floor = float(np.median(energies))
+        noise_floor = float(
+            np.median(energies)
+        )
 
-        # Don't allow an unrealistically tiny threshold.
-        noise_floor = max(noise_floor, 0.0005)
+        noise_floor = max(
+            noise_floor,
+            0.0005
+        )
 
-        print(f"🔊 Noise floor: {noise_floor:.6f}")
+        print(
+            f"🔊 Noise floor: {noise_floor:.6f}"
+        )
 
         return noise_floor
 
-    def _normalize_audio(self, audio: np.ndarray) -> np.ndarray:
-        """
-        Gentle normalization.
-
-        We intentionally do NOT use an aggressive noise gate.
-        Quiet speech contains useful consonants and small words.
-        """
+    def _normalize_audio(
+        self,
+        audio: np.ndarray,
+    ) -> np.ndarray:
 
         if audio.size == 0:
             return audio.astype(np.float32)
 
         audio = audio.astype(np.float32)
 
-        # Remove DC offset.
         audio = audio - np.mean(audio)
 
-        # Find peak.
-        peak = float(np.max(np.abs(audio)))
+        peak = float(
+            np.max(np.abs(audio))
+        )
 
         if peak <= 0:
             return audio
 
-        # Normalize only when the recording is very quiet.
-        #
-        # This boosts quiet speech without constantly amplifying
-        # background noise.
         target_peak = 0.85
 
         if peak < 0.35:
-            gain = target_peak / max(peak, 0.05)
 
-            # Don't apply ridiculous amounts of gain.
-            gain = min(gain, 4.0)
+            gain = target_peak / max(
+                peak,
+                0.05
+            )
+
+            gain = min(
+                gain,
+                4.0
+            )
 
             audio = audio * gain
 
-        # Safety limiter.
-        audio = np.clip(audio, -0.98, 0.98)
+        audio = np.clip(
+            audio,
+            -0.98,
+            0.98
+        )
 
         return audio
 
-    # ---------------------------------------------------------
-    # RECORDING
-    # ---------------------------------------------------------
-
     def record_until_silence(self) -> np.ndarray:
-        """
-        Record natural speech until sustained silence.
-
-        The VAD uses:
-          1. noise calibration
-          2. start threshold
-          3. lower continuation threshold
-          4. smoothed energy
-          5. pre-buffering
-          6. sustained silence timeout
-
-        This is designed for hands-free cooking speech.
-        """
 
         chunk_size = int(
             CHUNK_DURATION * SAMPLE_RATE
@@ -182,7 +173,7 @@ class STTService:
             int(
                 PRE_BUFFER_DURATION
                 / CHUNK_DURATION
-            ),
+            )
         )
 
         print("\n🎙️ Listening...")
@@ -201,7 +192,6 @@ class STTService:
 
         speech_start_time = None
         silence_start_time = None
-
         recording_start_time = None
 
         with sd.InputStream(
@@ -211,23 +201,19 @@ class STTService:
             blocksize=chunk_size,
         ) as stream:
 
-            # ---------------------------------------------
-            # NOISE CALIBRATION
-            # ---------------------------------------------
-
             noise_floor = self._calibrate_noise(
                 stream,
-                chunk_size,
+                chunk_size
             )
 
             start_threshold = max(
                 noise_floor * SPEECH_MULTIPLIER,
-                MIN_START_THRESHOLD,
+                MIN_START_THRESHOLD
             )
 
             continue_threshold = max(
                 noise_floor * CONTINUE_MULTIPLIER,
-                MIN_CONTINUE_THRESHOLD,
+                MIN_CONTINUE_THRESHOLD
             )
 
             print(
@@ -244,10 +230,6 @@ class STTService:
 
             recording_start_time = time.time()
 
-            # ---------------------------------------------
-            # LISTEN LOOP
-            # ---------------------------------------------
-
             while True:
 
                 audio_chunk, overflowed = stream.read(
@@ -263,19 +245,18 @@ class STTService:
                     audio_chunk
                 )
 
-                energy_history.append(energy)
+                energy_history.append(
+                    energy
+                )
 
                 smoothed_energy = float(
                     np.mean(energy_history)
                 )
 
-                # Always maintain the pre-buffer.
                 if not speech_started:
-                    pre_buffer.append(audio_chunk)
-
-                # -----------------------------------------
-                # WAITING FOR SPEECH
-                # -----------------------------------------
+                    pre_buffer.append(
+                        audio_chunk
+                    )
 
                 if not speech_started:
 
@@ -291,45 +272,39 @@ class STTService:
 
                         if elapsed >= MIN_SPEECH_DURATION:
 
-                            print("🗣️ Speech detected!")
+                            print(
+                                "🗣️ Speech detected!"
+                            )
 
                             speech_started = True
 
                             silence_start_time = None
 
-                            # Include the audio immediately
-                            # before speech detection.
                             chunks.extend(
                                 list(pre_buffer)
                             )
 
                     else:
-                        # Energy dropped before enough
-                        # speech was detected.
-                        speech_start_time = None
 
-                # -----------------------------------------
-                # SPEECH ACTIVE
-                # -----------------------------------------
+                        speech_start_time = None
 
                 else:
 
-                    chunks.append(audio_chunk)
+                    chunks.append(
+                        audio_chunk
+                    )
 
                     if (
                         smoothed_energy
                         >= continue_threshold
                     ):
-                        # User is still talking.
+
                         silence_start_time = None
 
                     else:
 
                         if silence_start_time is None:
-
-                            silence_start_time = (
-                                time.time()
-                            )
+                            silence_start_time = time.time()
 
                         silence_elapsed = (
                             time.time()
@@ -347,10 +322,6 @@ class STTService:
 
                             break
 
-                # -----------------------------------------
-                # MAXIMUM RECORDING TIME
-                # -----------------------------------------
-
                 elapsed_total = (
                     time.time()
                     - recording_start_time
@@ -367,32 +338,27 @@ class STTService:
 
                     break
 
-        # -------------------------------------------------
-        # NO AUDIO
-        # -------------------------------------------------
-
         if not chunks:
 
             print("⚠️ No speech detected.")
 
             return np.array(
                 [],
-                dtype=np.float32,
+                dtype=np.float32
             )
 
-        # -------------------------------------------------
-        # JOIN AUDIO
-        # -------------------------------------------------
+        audio = np.concatenate(
+            chunks
+        )
 
-        audio = np.concatenate(chunks)
+        audio = self._normalize_audio(
+            audio
+        )
 
-        # -------------------------------------------------
-        # GENTLE NORMALIZATION
-        # -------------------------------------------------
-
-        audio = self._normalize_audio(audio)
-
-        duration = len(audio) / SAMPLE_RATE
+        duration = (
+            len(audio)
+            / SAMPLE_RATE
+        )
 
         print(
             f"🎧 Captured audio: "
@@ -401,146 +367,383 @@ class STTService:
 
         return audio
 
-    # ---------------------------------------------------------
-    # TRANSCRIPTION
-    # ---------------------------------------------------------
+    # =========================================================
+    # CLEAN TRANSCRIPTION
+    # =========================================================
 
     def _clean_transcription(
         self,
         text: str,
     ) -> str:
-        """
-        Only remove obvious formatting artifacts.
-
-        IMPORTANT:
-        We do NOT remove repeated words.
-
-        Example:
-            "stir stir stir"
-        must remain exactly that.
-
-        The conversation engine can decide later
-        whether repetition is meaningful.
-        """
 
         if not text:
             return ""
 
         text = text.strip()
 
-        # Collapse excessive whitespace.
         text = re.sub(
             r"\s+",
             " ",
-            text,
+            text
         )
 
-        # Repeated punctuation.
         text = re.sub(
             r"!{2,}",
             "!",
-            text,
+            text
         )
 
         text = re.sub(
             r"\?{2,}",
             "?",
-            text,
+            text
         )
 
-        # Remove random punctuation at beginning.
         text = re.sub(
             r"^[,.;:!?]+\s*",
             "",
-            text,
+            text
         )
 
-        # Remove random punctuation at end.
         text = re.sub(
             r"\s*[,;:]+\s*$",
             "",
-            text,
+            text
         )
 
-        # Fix spaces before punctuation.
         text = re.sub(
             r"\s+([,.!?;:])",
             r"\1",
-            text,
+            text
         )
 
         return text.strip()
+
+    # =========================================================
+    # BROWSER AUDIO → NUMPY
+    # =========================================================
+
+    def _audio_bytes_to_numpy(
+        self,
+        audio_bytes: bytes,
+        filename: str,
+        content_type: str,
+    ) -> np.ndarray:
+
+        if not audio_bytes:
+            return np.array(
+                [],
+                dtype=np.float32
+            )
+
+        suffix = os.path.splitext(
+            filename or "audio.wav"
+        )[1].lower()
+
+        content_type = (
+            content_type or ""
+        ).lower()
+
+        is_wav = (
+            suffix in {".wav", ".wave"}
+            or content_type in {
+                "audio/wav",
+                "audio/x-wav",
+                "audio/wave",
+            }
+        )
+
+        # -----------------------------------------------------
+        # WAV
+        # -----------------------------------------------------
+
+        if is_wav:
+
+            try:
+
+                with wave.open(
+                    io.BytesIO(audio_bytes),
+                    "rb"
+                ) as wav_file:
+
+                    channels = (
+                        wav_file.getnchannels()
+                    )
+
+                    sample_width = (
+                        wav_file.getsampwidth()
+                    )
+
+                    sample_rate = (
+                        wav_file.getframerate()
+                    )
+
+                    frames = (
+                        wav_file.readframes(
+                            wav_file.getnframes()
+                        )
+                    )
+
+            except (
+                wave.Error,
+                EOFError
+            ) as error:
+
+                raise STTUnavailableError(
+                    "Invalid WAV audio file."
+                ) from error
+
+            if sample_width != 2:
+
+                raise STTUnavailableError(
+                    "WAV audio must use 16-bit PCM."
+                )
+
+            pcm = (
+                np.frombuffer(
+                    frames,
+                    dtype=np.int16
+                )
+                .astype(np.float32)
+                / 32768.0
+            )
+
+            if channels > 1:
+
+                pcm = pcm.reshape(
+                    -1,
+                    channels
+                ).mean(axis=1)
+
+            if sample_rate != SAMPLE_RATE:
+
+                raise STTUnavailableError(
+                    f"WAV sample rate must be "
+                    f"{SAMPLE_RATE} Hz; "
+                    f"received {sample_rate} Hz."
+                )
+
+            return pcm
+
+        # -----------------------------------------------------
+        # WEBM / OPUS / OTHER BROWSER FORMATS
+        # -----------------------------------------------------
+
+        ffmpeg = shutil.which("ffmpeg")
+
+        if ffmpeg is None:
+
+            raise STTUnavailableError(
+                "ffmpeg is required to decode "
+                "browser audio such as WebM/Opus."
+            )
+
+        suffix = (
+            suffix
+            if suffix and len(suffix) <= 8
+            else ".audio"
+        )
+
+        source_path = None
+
+        try:
+
+            with tempfile.NamedTemporaryFile(
+                suffix=suffix,
+                delete=False
+            ) as source:
+
+                source.write(
+                    audio_bytes
+                )
+
+                source_path = source.name
+
+            command = [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                source_path,
+                "-f",
+                "s16le",
+                "-acodec",
+                "pcm_s16le",
+                "-ac",
+                "1",
+                "-ar",
+                str(SAMPLE_RATE),
+                "pipe:1",
+            ]
+
+            result = subprocess.run(
+                command,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=120,
+            )
+
+        except (
+            OSError,
+            subprocess.SubprocessError
+        ) as error:
+
+            raise STTUnavailableError(
+                "Could not decode uploaded audio."
+            ) from error
+
+        finally:
+
+            if source_path:
+
+                try:
+                    os.remove(
+                        source_path
+                    )
+                except FileNotFoundError:
+                    pass
+
+        if (
+            result.returncode != 0
+            or not result.stdout
+        ):
+
+            detail = (
+                result.stderr
+                .decode(
+                    "utf-8",
+                    errors="replace"
+                )
+                .strip()
+            )
+
+            raise STTUnavailableError(
+                "Could not decode uploaded audio."
+                + (
+                    f" {detail}"
+                    if detail
+                    else ""
+                )
+            )
+
+        return (
+            np.frombuffer(
+                result.stdout,
+                dtype=np.int16
+            )
+            .astype(np.float32)
+            / 32768.0
+        )
+
+    # =========================================================
+    # HTTP AUDIO → WHISPER
+    # =========================================================
+
+    def transcribe_bytes(
+        self,
+        audio_bytes: bytes,
+        filename: str = "audio.wav",
+        content_type: str = "audio/wav",
+    ) -> str:
+
+        try:
+
+            audio = self._audio_bytes_to_numpy(
+                audio_bytes,
+                filename,
+                content_type
+            )
+
+        except STTUnavailableError:
+
+            raise
+
+        except Exception as error:
+
+            raise STTUnavailableError(
+                "Could not decode uploaded audio."
+            ) from error
+
+        return self.transcribe(
+            audio
+        )
+
+    async def transcribe_bytes_async(
+        self,
+        audio_bytes: bytes,
+        filename: str = "audio.wav",
+        content_type: str = "audio/wav",
+    ) -> str:
+
+        return await asyncio.to_thread(
+            self.transcribe_bytes,
+            audio_bytes,
+            filename,
+            content_type,
+        )
+
+    # =========================================================
+    # WHISPER
+    # =========================================================
 
     def transcribe(
         self,
         audio: np.ndarray,
     ) -> str:
-        """
-        Send audio to Whisper.
-        """
 
         if audio.size == 0:
             return ""
 
-        print("🧠 Transcribing...")
+        print(
+            "🧠 Transcribing with local Whisper..."
+        )
 
         result = self.model.transcribe(
             audio,
-
-            # CPU-friendly.
             fp16=False,
-
-            # SousChef is currently English.
-            language="en",
-
-            # Each user utterance should be interpreted
-            # independently.
+            language=self.language,
             condition_on_previous_text=False,
-
-            # Deterministic decoding.
             temperature=0,
-
-            # Helps Whisper understand cooking vocabulary.
             initial_prompt=(
-                "You are transcribing a cooking assistant "
-                "conversation. The speaker may talk about "
-                "recipes, ingredients, food preparation, "
-                "measurements, cooking temperatures, timers, "
-                "pots, pans, knives, ovens, stoves, frying, "
-                "boiling, baking, roasting, chopping, mixing, "
-                "stirring, seasoning, salt, pepper, oil, "
-                "garlic, onion, chicken, beef, vegetables, "
-                "rice, pasta, sauces, and cooking steps. "
+                "You are transcribing a cooking "
+                "assistant conversation. "
+                "The speaker may talk about recipes, "
+                "ingredients, quantities, measurements, "
+                "temperatures, timers, cooking steps, "
+                "pots, pans, ovens, stoves, frying, "
+                "boiling, baking, roasting, chopping, "
+                "mixing, stirring, seasoning, salt, "
+                "pepper, oil, garlic, onion, chicken, "
+                "beef, vegetables, rice, pasta, sauces, "
+                "and cooking steps. "
                 "Preserve the speaker's actual words."
             ),
         )
 
-        text = result.get(
-            "text",
-            "",
-        ).strip()
-
         text = self._clean_transcription(
-            text
+            result.get("text", "")
         )
 
         print(
             f"📝 Recognized: {text}"
         )
 
-        print("✅ Transcription complete.")
+        print(
+            "✅ Transcription complete."
+        )
 
         return text
 
-    # ---------------------------------------------------------
-    # PUBLIC API
-    # ---------------------------------------------------------
+    # =========================================================
+    # LOCAL TESTING ONLY
+    # =========================================================
 
     def listen_and_transcribe(self) -> str:
-        """
-        Record speech and return transcription.
-        """
 
         audio = self.record_until_silence()
 
-        return self.transcribe(audio)
+        return self.transcribe(
+            audio
+        )
