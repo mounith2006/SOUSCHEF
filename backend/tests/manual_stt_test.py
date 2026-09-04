@@ -2,7 +2,7 @@ from app.services.stt_service import STTService
 
 
 def main():
-    stt = STTService(model_name="base")
+    stt = STTService(model_name="small")
 
     text = stt.listen_and_transcribe()
 

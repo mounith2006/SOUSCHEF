@@ -4,38 +4,38 @@ import re
 class WakeWordService:
     """Detect and remove the SOUSCHEF wake word."""
 
-    WAKE_WORD = "sofi"
+    WAKE_WORD_VARIANTS = (
+        "sofi",
+        "sophie",
+    )
 
     def detect(self, text: str) -> bool:
-        """
-        Return True when the user's utterance starts with the wake word.
+        """Return True if the utterance starts with a recognized wake word."""
 
-        Examples:
-            "Sofi, add salt" -> True
-            "sofi start the timer" -> True
-            "Add salt" -> False
-        """
         normalized = text.strip().lower()
 
         if not normalized:
             return False
 
-        pattern = rf"^{re.escape(self.WAKE_WORD)}(?:\b|[,!?;:.])"
+        variants = "|".join(
+            re.escape(word) for word in self.WAKE_WORD_VARIANTS
+        )
+
+        pattern = rf"^(?:{variants})(?:\b|[,!?;:.])"
 
         return re.match(pattern, normalized) is not None
 
     def strip_wake_word(self, text: str) -> str:
-        """
-        Remove the wake word from the beginning of an utterance.
+        """Remove the recognized wake word and optional punctuation."""
 
-        Example:
-            "Sofi, add two teaspoons of salt"
-            -> "add two teaspoons of salt"
-        """
         if not self.detect(text):
             return ""
 
-        pattern = rf"^{re.escape(self.WAKE_WORD)}(?:\b)?[,!?;:.]?\s*"
+        variants = "|".join(
+            re.escape(word) for word in self.WAKE_WORD_VARIANTS
+        )
+
+        pattern = rf"^(?:{variants})(?:\b)?[,!?;:.]?\s*"
 
         cleaned = re.sub(
             pattern,

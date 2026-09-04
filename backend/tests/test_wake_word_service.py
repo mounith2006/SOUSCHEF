@@ -27,3 +27,17 @@ def test_missing_wake_word_returns_empty_text():
     service = WakeWordService()
 
     assert service.strip_wake_word("add salt") == ""
+
+
+def test_detects_sophie_variant():
+    service = WakeWordService()
+
+    assert service.detect("Sophie, add salt") is True
+    assert service.detect("SOPHIE wait!") is True
+
+
+def test_strips_sophie_variant():
+    service = WakeWordService()
+
+    assert service.strip_wake_word("Sophie, add salt") == "add salt"
+    assert service.strip_wake_word("SOPHIE wait!") == "wait!"
