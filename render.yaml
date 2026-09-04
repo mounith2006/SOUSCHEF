@@ -8,7 +8,7 @@ services:
 
     envVars:
       - key: WHISPER_MODEL
-        value: base
+        value: small
 
       - key: WHISPER_LANGUAGE
         value: en
