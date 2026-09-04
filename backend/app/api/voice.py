@@ -6,20 +6,25 @@ from fastapi import (
     File,
     HTTPException,
     UploadFile,
+    status,
 )
+from fastapi.responses import Response
+from pydantic import BaseModel, Field
 
 from app.config import Settings, get_settings
+from app.services.rime_tts_service import (
+    RimeTTSService,
+    RimeTTSUnavailableError,
+)
 from app.services.stt_service import (
     STTService,
     STTUnavailableError,
 )
 
-
 router = APIRouter(
     prefix="/api/voice",
     tags=["voice"],
 )
-
 
 _stt_service: STTService | None = None
 
@@ -30,25 +35,18 @@ def get_stt_service(
         Depends(get_settings),
     ],
 ) -> STTService:
-
     global _stt_service
 
     if _stt_service is None:
-
         try:
-
             _stt_service = STTService(
                 model_name=settings.whisper_model,
                 language=settings.whisper_language,
             )
-
         except Exception as error:
-
             raise HTTPException(
                 status_code=503,
-                detail=(
-                    "Local Whisper could not be loaded."
-                ),
+                detail="Local Whisper could not be loaded.",
             ) from error
 
     return _stt_service
@@ -57,11 +55,8 @@ def get_stt_service(
 @router.post("/transcribe")
 async def transcribe(
     audio: UploadFile = File(...),
-    service: STTService = Depends(
-        get_stt_service
-    ),
+    service: STTService = Depends(get_stt_service),
 ) -> dict[str, str]:
-
     """
     Receive audio from the user's browser
     and transcribe it using local Whisper.
@@ -70,33 +65,71 @@ async def transcribe(
     content = await audio.read()
 
     if not content:
-
         raise HTTPException(
             status_code=400,
             detail="Audio file is empty.",
         )
 
     try:
-
         text = await service.transcribe_bytes_async(
             content,
-            filename=(
-                audio.filename
-                or "audio.wav"
-            ),
+            filename=audio.filename or "audio.wav",
             content_type=(
                 audio.content_type
                 or "application/octet-stream"
             ),
         )
-
     except STTUnavailableError as error:
-
         raise HTTPException(
             status_code=422,
             detail=str(error),
         ) from error
 
     return {
-        "text": text
+        "text": text,
     }
+
+
+class SynthesisRequest(BaseModel):
+    # Rime's HTTP API accepts at most 500 characters per request.
+    text: str = Field(
+        min_length=1,
+        max_length=500,
+    )
+
+
+def get_rime_service(
+    settings: Annotated[
+        Settings,
+        Depends(get_settings),
+    ],
+) -> RimeTTSService:
+    return RimeTTSService(settings)
+
+
+@router.post(
+    "/synthesize",
+    response_class=Response,
+)
+async def synthesize(
+    request: SynthesisRequest,
+    service: Annotated[
+        RimeTTSService,
+        Depends(get_rime_service),
+    ],
+) -> Response:
+    """Turn short assistant text into WAV audio using the configured Rime voice."""
+
+    try:
+        audio = await service.synthesize(request.text)
+    except RimeTTSUnavailableError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Voice synthesis is temporarily unavailable.",
+        ) from error
+
+    return Response(
+        content=audio,
+        media_type="audio/wav",
+        headers={"Cache-Control": "no-store"},
+    )
