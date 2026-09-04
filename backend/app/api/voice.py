@@ -20,13 +20,18 @@ from app.services.stt_service import (
     STTService,
     STTUnavailableError,
 )
+from app.services.wake_word_service import WakeWordService
+
 
 router = APIRouter(
     prefix="/api/voice",
     tags=["voice"],
 )
 
+
 _stt_service: STTService | None = None
+
+wake_word_service = WakeWordService()
 
 
 def get_stt_service(
@@ -56,10 +61,11 @@ def get_stt_service(
 async def transcribe(
     audio: UploadFile = File(...),
     service: STTService = Depends(get_stt_service),
-) -> dict[str, str]:
+) -> dict[str, str | bool]:
     """
-    Receive audio from the user's browser
-    and transcribe it using local Whisper.
+    Receive audio from the user's browser,
+    transcribe it using local Whisper,
+    and require the "Sofi" wake word.
     """
 
     content = await audio.read()
@@ -71,7 +77,7 @@ async def transcribe(
         )
 
     try:
-        text = await service.transcribe_bytes_async(
+        raw_text = await service.transcribe_bytes_async(
             content,
             filename=audio.filename or "audio.wav",
             content_type=(
@@ -85,8 +91,23 @@ async def transcribe(
             detail=str(error),
         ) from error
 
+    # Check whether the user started the interaction
+    # with the required wake word: "Sofi".
+    wake_word_detected = wake_word_service.detect(raw_text)
+
+    if not wake_word_detected:
+        return {
+            "text": "",
+            "wake_word_detected": False,
+        }
+
+    # Remove "Sofi" before sending the user's request
+    # to Person 1's conversation engine.
+    cleaned_text = wake_word_service.strip_wake_word(raw_text)
+
     return {
-        "text": text,
+        "text": cleaned_text,
+        "wake_word_detected": True,
     }
 
 
