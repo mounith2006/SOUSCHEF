@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     )
 
     # Whisper STT
-    whisper_model: str = "base"
+    whisper_model: str = "small"
     whisper_language: str = "en"
     whisper_timeout_seconds: float = 120.0
 

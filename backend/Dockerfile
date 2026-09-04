@@ -27,7 +27,7 @@ COPY .env.example ./.env.example
 
 # Download the Whisper model during the image build so the
 # first API request does not have to download it.
-RUN python -c "import whisper; whisper.load_model('base')"
+RUN python -c "import whisper; whisper.load_model('small')"
 
 EXPOSE 8000
 
