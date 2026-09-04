@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: souschef-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /health
+
+    envVars:
+      - key: WHISPER_MODEL
+        value: base
+
+      - key: WHISPER_LANGUAGE
+        value: en
+
+      - key: WHISPER_TIMEOUT_SECONDS
+        value: "120"
+
+      - key: FRONTEND_ORIGIN
+        value: "*"
