@@ -30,13 +30,19 @@ async def main():
 
     print(f"Rime API key: {'CONFIGURED' if is_rime_configured else 'NOT CONFIGURED'}\n")
 
-    provider = (getattr(settings, "llm_provider", "local") or "local").lower()
-    openai_key = getattr(settings, "openai_api_key", None) or os.getenv("OPENAI_API_KEY")
+    provider = (getattr(settings, "llm_provider", "local") or os.getenv("LLM_PROVIDER", "local")).lower()
 
-    is_placeholder_key = not openai_key or "your_" in openai_key.lower() or "YOUR_" in openai_key
-    if provider == "openai" and is_placeholder_key:
-        print("[NOTE] OPENAI_API_KEY is not configured or uses placeholder; using local deterministic LLM.\n")
-        provider = "local"
+    if provider == "nvidia":
+        nvidia_key = getattr(settings, "nvidia_api_key", None) or os.getenv("NVIDIA_API_KEY")
+        is_nvidia_configured = bool(nvidia_key and "your_" not in nvidia_key.lower())
+        print(f"NVIDIA API key: {'CONFIGURED' if is_nvidia_configured else 'NOT CONFIGURED'}\n")
+    elif provider == "openai":
+        openai_key = getattr(settings, "openai_api_key", None) or os.getenv("OPENAI_API_KEY")
+        is_openai_configured = bool(openai_key and "your_" not in openai_key.lower())
+        print(f"OpenAI API key: {'CONFIGURED' if is_openai_configured else 'NOT CONFIGURED'}\n")
+    else:
+        print(f"LLM Provider: LOCAL\n")
+
 
 
 
