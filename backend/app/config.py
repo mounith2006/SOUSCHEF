@@ -1,13 +1,22 @@
+import os
 from functools import lru_cache
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from dotenv import load_dotenv
+
+# Ensure .env is explicitly loaded from backend/ or project root
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_env_path = os.path.join(_backend_dir, ".env")
+if os.path.exists(_env_path):
+    load_dotenv(_env_path, override=True)
+else:
+    load_dotenv(override=True)
 
 
 class Settings(BaseSettings):
     """Configuration for the voice pipeline."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_env_path if os.path.exists(_env_path) else ".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -28,7 +37,13 @@ class Settings(BaseSettings):
     rime_language: str = "eng"
     rime_timeout_seconds: float = 30.0
 
+    # LLM configuration
+    llm_provider: str = "local"
+    openai_api_key: str | None = None
+    llm_model: str = "gpt-4o-mini"
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
+

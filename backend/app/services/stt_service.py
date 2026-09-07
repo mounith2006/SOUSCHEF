@@ -9,9 +9,11 @@ import time
 import wave
 from collections import deque
 
+import inspect
 import numpy as np
 import sounddevice as sd
 import whisper
+from ..conversation.interfaces import STTInterface
 
 
 SAMPLE_RATE = 16000
@@ -20,11 +22,12 @@ CHANNELS = 1
 # CPU-friendly model for deployment.
 DEFAULT_MODEL = "small"
 
-CHUNK_DURATION = 0.1
-MAX_RECORDING_DURATION = 60.0
+CHUNK_DURATION = 0.05
+MAX_RECORDING_DURATION = 20.0
+SILENCE_DURATION = 1.0
+INITIAL_SILENCE_TIMEOUT = 4.0
+NOISE_CALIBRATION_DURATION = 0.5
 
-SILENCE_DURATION = 5.0
-NOISE_CALIBRATION_DURATION = 0.7
 
 SPEECH_MULTIPLIER = 2.5
 CONTINUE_MULTIPLIER = 1.15
@@ -37,23 +40,72 @@ PRE_BUFFER_DURATION = 0.5
 ENERGY_SMOOTHING_CHUNKS = 3
 
 
+
 class STTUnavailableError(Exception):
     """Raised when local speech-to-text cannot process the audio."""
 
 
-class STTService:
+_MODEL_CACHE = {}
+
+
+class STTService(STTInterface):
     def __init__(
         self,
         model_name: str = DEFAULT_MODEL,
         language: str = "en",
     ):
-        print(f"Loading Whisper model: {model_name}...")
-
-        self.model = whisper.load_model(model_name)
-
+        self.model_name = model_name
         self.language = language
 
-        print("Whisper loaded.")
+        self._on_speech_started = None
+        self._on_transcript = None
+
+    @property
+    def model(self):
+        if self.model_name not in _MODEL_CACHE:
+            print(f"Loading Whisper model: {self.model_name}...")
+            _MODEL_CACHE[self.model_name] = whisper.load_model(self.model_name)
+            print("Whisper loaded.")
+        return _MODEL_CACHE[self.model_name]
+
+
+    def set_on_speech_started(self, callback) -> None:
+        self._on_speech_started = callback
+
+    def set_on_transcript(self, callback) -> None:
+        self._on_transcript = callback
+
+    def notify_speech_started_sync(self) -> None:
+        if self._on_speech_started:
+            try:
+                loop = asyncio.get_running_loop()
+                if inspect.iscoroutinefunction(self._on_speech_started):
+                    asyncio.run_coroutine_threadsafe(self._on_speech_started(), loop)
+                else:
+                    loop.call_soon_threadsafe(self._on_speech_started)
+            except RuntimeError:
+                pass
+
+    async def simulate_speech_started(self) -> None:
+        await self.notify_speech_started()
+
+    async def simulate_transcript(self, text: str) -> None:
+        await self.notify_transcript(text)
+
+    async def notify_speech_started(self) -> None:
+        if self._on_speech_started:
+            if inspect.iscoroutinefunction(self._on_speech_started):
+                await self._on_speech_started()
+            else:
+                self._on_speech_started()
+
+    async def notify_transcript(self, text: str) -> None:
+        if self._on_transcript:
+            if inspect.iscoroutinefunction(self._on_transcript):
+                await self._on_transcript(text)
+            else:
+                self._on_transcript(text)
+
 
     # =========================================================
     # LOCAL MICROPHONE / VAD
@@ -277,6 +329,7 @@ class STTService:
                             )
 
                             speech_started = True
+                            self.notify_speech_started_sync()
 
                             silence_start_time = None
 
@@ -287,6 +340,11 @@ class STTService:
                     else:
 
                         speech_start_time = None
+
+                        if (time.time() - recording_start_time) >= INITIAL_SILENCE_TIMEOUT:
+                            print("⏱️ Initial silence timeout.")
+                            break
+
 
                 else:
 
@@ -736,14 +794,16 @@ class STTService:
 
         return text
 
-    # =========================================================
-    # LOCAL TESTING ONLY
-    # =========================================================
-
-    def listen_and_transcribe(self) -> str:
-
+    def listen_and_transcribe_sync(self) -> str:
         audio = self.record_until_silence()
+        return self.transcribe(audio)
 
-        return self.transcribe(
-            audio
-        )
+    async def listen_and_transcribe(self) -> str:
+        text = await asyncio.to_thread(self.listen_and_transcribe_sync)
+        clean_text = text.strip() if text else ""
+        if clean_text:
+            await self.notify_transcript(clean_text)
+        return clean_text
+
+
+DefaultSTTService = STTService
