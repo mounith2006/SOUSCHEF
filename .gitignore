@@ -13,3 +13,5 @@ dist/
 
 # Editor files
 .vscode/
+.DS_Store
+.pytest_cache/
