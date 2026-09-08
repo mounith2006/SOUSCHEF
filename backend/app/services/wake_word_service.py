@@ -2,15 +2,31 @@ import re
 
 
 class WakeWordService:
-    """Detect and remove the SOUSCHEF wake word."""
+    """
+    Detect and remove the SOUSCHEF wake word.
+
+    Official wake word:
+        Sofi
+
+    Whisper may transcribe "Sofi" as:
+        Sophie
+        Sophia
+
+    Those are accepted only as STT recognition variants.
+    The official wake word remains "Sofi".
+    """
 
     WAKE_WORD_VARIANTS = (
         "sofi",
         "sophie",
+        "sophia",
     )
 
     def detect(self, text: str) -> bool:
-        """Return True if the utterance starts with a recognized wake word."""
+        """
+        Return True when the utterance starts with a recognized
+        wake-word variant.
+        """
 
         normalized = text.strip().lower()
 
@@ -18,7 +34,8 @@ class WakeWordService:
             return False
 
         variants = "|".join(
-            re.escape(word) for word in self.WAKE_WORD_VARIANTS
+            re.escape(word)
+            for word in self.WAKE_WORD_VARIANTS
         )
 
         pattern = rf"^(?:{variants})(?:\b|[,!?;:.])"
@@ -26,13 +43,27 @@ class WakeWordService:
         return re.match(pattern, normalized) is not None
 
     def strip_wake_word(self, text: str) -> str:
-        """Remove the recognized wake word and optional punctuation."""
+        """
+        Remove the recognized wake word and optional punctuation.
+
+        Examples:
+
+            "Sofi, add salt"
+                -> "add salt"
+
+            "Sophie wait!"
+                -> "wait!"
+
+            "Sophia, how long?"
+                -> "how long?"
+        """
 
         if not self.detect(text):
             return ""
 
         variants = "|".join(
-            re.escape(word) for word in self.WAKE_WORD_VARIANTS
+            re.escape(word)
+            for word in self.WAKE_WORD_VARIANTS
         )
 
         pattern = rf"^(?:{variants})(?:\b)?[,!?;:.]?\s*"

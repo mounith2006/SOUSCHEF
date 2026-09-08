@@ -1,11 +1,14 @@
 import os
 from functools import lru_cache
-from pydantic_settings import BaseSettings, SettingsConfigDict
+
 from dotenv import load_dotenv
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
 
 # Ensure .env is explicitly loaded from backend/ or project root
 _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _env_path = os.path.join(_backend_dir, ".env")
+
 if os.path.exists(_env_path):
     load_dotenv(_env_path, override=True)
 else:
@@ -26,6 +29,12 @@ class Settings(BaseSettings):
     whisper_language: str = "en"
     whisper_timeout_seconds: float = 120.0
 
+    # Wake word / active listening
+    wake_chunk_duration: float = 1.5
+    wake_overlap_duration: float = 0.5
+    wake_min_energy: float = 0.0015
+    active_listening_timeout: float = 6.0
+
     # Frontend
     frontend_origin: str = "*"
 
@@ -44,8 +53,6 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-4o-mini"
 
 
-
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
-
