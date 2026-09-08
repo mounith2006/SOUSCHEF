@@ -4,6 +4,7 @@ from ..conversation.interfaces import LLMInterface, TTSInterface, STTInterface
 from .rime_tts_service import RimeTTSService
 from .stt_service import DefaultSTTService
 from .llm_service import get_llm_service, LocalTestLLM
+from ..tools.cooking_tool_runner import CookingToolRunner
 
 class SessionConversationManager:
     """Registry managing session-scoped ConversationEngine instances for multi-session safety."""
@@ -27,6 +28,7 @@ class SessionConversationManager:
                 llm=llm_inst,
                 stt=stt_inst,
                 session_id=session_id,
+                tool_runner=CookingToolRunner(session_id),
             )
         return self._engines[session_id]
 

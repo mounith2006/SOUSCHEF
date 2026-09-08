@@ -1,4 +1,5 @@
 import asyncio
+import json
 import uuid
 import logging
 from typing import Optional, List, Dict, Any
@@ -13,6 +14,7 @@ from .interfaces import (
     ToolInterface,
 )
 from .events import EventType, log_event
+from .llm_protocol import parse_llm_response
 
 
 logger = logging.getLogger("souschef.conversation")
@@ -531,6 +533,49 @@ class ConversationEngine:
 
             return None
 
+    async def _generate_response_with_tools(
+        self,
+        turn: Turn,
+        history: List[Dict[str, str]],
+    ) -> str:
+        """Run bounded LLM → tool → LLM rounds and return speech-safe text."""
+        llm_input = turn.user_input
+        working_history = list(history)
+
+        for _ in range(3):
+            raw_response = await self.llm.generate_response(llm_input, working_history)
+            decision = parse_llm_response(raw_response)
+            if not decision.tool_calls:
+                return decision.speech or "I couldn't produce a response. Please try again."
+
+            tool_results = []
+            for call in decision.tool_calls:
+                result = await self.execute_tool_task(turn, call.name, call.arguments)
+                if not self.is_current_turn(turn.turn_id):
+                    return ""
+                tool_results.append({"name": call.name, "result": result})
+
+            # If every requested action was rejected and the model already
+            # supplied a useful clarification, speak it instead of allowing
+            # the provider to retry the same malformed call in a loop.
+            failed_results = [
+                item["result"]
+                for item in tool_results
+                if isinstance(item["result"], dict)
+                and item["result"].get("ok") is False
+            ]
+            if len(failed_results) == len(tool_results) and decision.speech:
+                return decision.speech
+
+            working_history.append({"role": "assistant", "content": raw_response})
+            llm_input = (
+                "Tool results (authoritative JSON): "
+                + json.dumps(tool_results, default=str)
+                + ". Return the next protocol JSON response."
+            )
+
+        return "I couldn't finish that action safely. Please try again."
+
     async def _process_turn(
         self,
         turn: Turn,
@@ -583,12 +628,10 @@ class ConversationEngine:
             # -------------------------------------------------
             try:
 
-                response_text = (
-                    await self.llm.generate_response(
-                        turn.user_input,
-                        history,
-                    )
-                )
+                response_text = await self._generate_response_with_tools(turn, history)
+
+                if not self.is_current_turn(turn.turn_id):
+                    return
 
                 turn.response_text = response_text
 

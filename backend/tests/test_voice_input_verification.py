@@ -4,18 +4,32 @@ from typing import List
 from app.conversation.engine import ConversationEngine
 from app.conversation.state import ConversationState
 from app.conversation.turn import Turn
-from app.conversation.interfaces import TTSInterface
+from app.conversation.interfaces import STTInterface, TTSInterface
 from app.services.voice_orchestrator import VoiceOrchestrator
-from app.services.stt_service import DefaultSTTService
 from app.services.rime_tts_service import RimeTTSService
 from app.services.llm_service import LocalTestLLM
 
-class DummyMockSTT(DefaultSTTService):
+class DummyMockSTT(STTInterface):
     """Mock STT service for testing real voice orchestrator interaction without mic hardware."""
 
     def __init__(self):
-        super().__init__()
         self.transcription_queue: List[str] = []
+        self._on_speech_started = None
+        self._on_transcript = None
+
+    def set_on_speech_started(self, callback) -> None:
+        self._on_speech_started = callback
+
+    def set_on_transcript(self, callback) -> None:
+        self._on_transcript = callback
+
+    async def notify_speech_started(self) -> None:
+        if self._on_speech_started is not None:
+            await self._on_speech_started()
+
+    async def notify_transcript(self, text: str) -> None:
+        if self._on_transcript is not None:
+            await self._on_transcript(text)
 
     def queue_transcription(self, text: str):
         self.transcription_queue.append(text)
@@ -191,4 +205,3 @@ class TestVoiceInputVerification(unittest.IsolatedAsyncioTestCase):
         # Verify noise floor calculation is fast
         noise_floor = stt._calibrate_noise(stream, 800)
         self.assertIsNotNone(noise_floor)
-

@@ -2,8 +2,7 @@ import asyncio
 import unittest
 from app.conversation.engine import ConversationEngine
 from app.conversation.state import ConversationState
-from app.conversation.interfaces import TTSInterface, LLMInterface
-from app.services.stt_service import DefaultSTTService
+from app.conversation.interfaces import TTSInterface, LLMInterface, STTInterface
 from app.services.rime_tts_service import RimeTTSService
 from app.services.llm_service import LocalTestLLM, get_llm_service
 from app.services.voice_orchestrator import VoiceOrchestrator
@@ -39,12 +38,30 @@ class MockSlowLLM(LLMInterface):
         return self.responses.get(user_input, f"Response to '{user_input}'")
 
 
+class MockSTT(STTInterface):
+    """Callback-capable STT double that never loads Whisper or microphone hardware."""
+
+    def __init__(self):
+        self._on_speech_started = None
+        self._on_transcript = None
+
+    def set_on_speech_started(self, callback) -> None:
+        self._on_speech_started = callback
+
+    def set_on_transcript(self, callback) -> None:
+        self._on_transcript = callback
+
+    async def simulate_speech_started(self) -> None:
+        if self._on_speech_started is not None:
+            await self._on_speech_started()
+
+
 class TestPhase3VoiceIntegration(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.tts = MockTTSWithPlayback()
         self.llm = MockSlowLLM()
-        self.stt = DefaultSTTService()
+        self.stt = MockSTT()
         self.engine = ConversationEngine(tts=self.tts, llm=self.llm, stt=self.stt)
         self.orchestrator = VoiceOrchestrator(engine=self.engine, stt=self.stt, tts=self.tts)
 
@@ -144,7 +161,7 @@ class TestPhase3VoiceIntegration(unittest.IsolatedAsyncioTestCase):
 
     # Test J — Single transcript delivery (no duplicate turn creation)
     async def test_J_single_transcript_delivery(self):
-        stt = DefaultSTTService()
+        stt = MockSTT()
 
         async def dummy_listen():
             return "How long to cook pasta?"

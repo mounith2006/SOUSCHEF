@@ -1,4 +1,5 @@
 import asyncio
+import re
 import sys
 import logging
 from typing import Optional
@@ -83,6 +84,7 @@ class VoiceOrchestrator:
         self.active_listening_timeout = (
             settings.active_listening_timeout
         )
+        self.sleep_warning_timeout = settings.sleep_warning_timeout
 
         self._wake_loop_running = False
 
@@ -194,6 +196,9 @@ class VoiceOrchestrator:
                 f"🎤 YOU: {clean_text}\n"
             )
 
+        if await self._try_local_cooking_command(clean_text):
+            return None
+
         turn = await self.engine.handle_user_input(
             clean_text
         )
@@ -210,6 +215,68 @@ class VoiceOrchestrator:
             )
 
         return turn
+
+    async def _try_local_cooking_command(self, text: str) -> bool:
+        """Handle common state commands without a slow remote LLM round trip."""
+        runner = self.engine.tool_runner
+        if runner is None:
+            return False
+
+        normalized = text.lower().strip(" .!?")
+        tool_name = ""
+        arguments = {}
+
+        if any(phrase in normalized for phrase in ("current step", "what's next", "what is next", "repeat the step")):
+            tool_name = "get_current_step"
+        elif any(phrase in normalized for phrase in ("finished this step", "done with this step", "completed this step")):
+            tool_name = "complete_step"
+        elif any(phrase in normalized for phrase in ("list my timers", "what timers", "show my timers")):
+            tool_name = "list_timers"
+        else:
+            timer_match = re.search(
+                r"(?:set|start)(?: a)? timer(?: for)? (\d+(?:\.\d+)?)\s*(seconds?|minutes?)",
+                normalized,
+            )
+            if timer_match:
+                duration = float(timer_match.group(1))
+                if timer_match.group(2).startswith("minute"):
+                    duration *= 60
+                tool_name = "start_timer"
+                arguments = {"duration_seconds": duration, "label": "Cooking timer"}
+
+        if not tool_name:
+            return False
+
+        result = await runner.execute_tool(tool_name, arguments)
+        if not isinstance(result, dict) or not result.get("ok"):
+            return False
+
+        data = result.get("data")
+        if tool_name == "get_current_step":
+            response = (
+                f"Your current step is: {data['instruction']}"
+                if data
+                else "You have completed all the recipe steps."
+            )
+        elif tool_name == "complete_step":
+            step = data.get("current_step") if data else None
+            response = (
+                f"Done. Your next step is: {step['instruction']}"
+                if step
+                else "Great work. You have completed the recipe."
+            )
+        elif tool_name == "start_timer":
+            response = f"Timer started for {data['duration_seconds']:g} seconds."
+        else:
+            active = [timer for timer in data if timer["status"] in ("running", "paused")]
+            response = (
+                f"You have {len(active)} active timer{'s' if len(active) != 1 else ''}."
+                if active
+                else "You have no active timers."
+            )
+
+        await self._speak_feedback(response)
+        return True
 
     async def process_user_utterance(
         self,
@@ -341,6 +408,96 @@ class VoiceOrchestrator:
 
         return None
 
+    async def _capture_active_text(self, timeout: float | None = None) -> tuple[str, str]:
+        """Return (status, text), distinguishing silence from unclear speech."""
+        audio = await asyncio.to_thread(
+            self.stt.record_active_command,
+            timeout or self.active_listening_timeout,
+        )
+        if audio.size == 0:
+            return "silence", ""
+        text = await asyncio.to_thread(self.stt.transcribe, audio)
+        clean_text = text.strip() if text else ""
+        return ("heard", clean_text) if clean_text else ("unclear", "")
+
+    async def _speak_feedback(self, text: str) -> None:
+        """Speak local voice-state feedback without spending an LLM request."""
+        if self.display_mode:
+            self._safe_print(f"🤖 SOUSCHEF: {text}\n")
+        await self.tts.speak(text)
+
+    async def _wake_greeting(self) -> str:
+        """Resume the active cooking step when a sleeping session is awakened."""
+        runner = self.engine.tool_runner
+        if runner is not None:
+            result = await runner.execute_tool("get_cooking_state", {})
+            if isinstance(result, dict) and result.get("ok"):
+                step = result.get("data", {}).get("current_step")
+                if step:
+                    return f"Welcome back. We were on this step: {step['instruction']} I'm listening."
+        return "Yes, I'm listening. What would you like to cook?"
+
+    async def _run_active_followups(self) -> None:
+        """Keep listening after replies until inactivity or an explicit sleep command."""
+        sleep_commands = {
+            "goodbye",
+            "go to sleep",
+            "stop listening",
+            "that's all",
+            "that is all",
+        }
+
+        while self._wake_loop_running:
+            if self.display_mode:
+                self._safe_print(
+                    "\n🟡 SOUSCHEF is still active — speak your follow-up "
+                    f"({self.active_listening_timeout:.1f}s)\n"
+                )
+
+            capture_status, followup = await self._capture_active_text()
+            if capture_status == "silence":
+                logger.info(
+                    "[VOICE ORCHESTRATOR] Follow-up timeout. Warning before sleep."
+                )
+                await self._speak_feedback(
+                    "I haven't heard anything. Should I stay awake?"
+                )
+                capture_status, followup = await self._capture_active_text(
+                    self.sleep_warning_timeout
+                )
+                if capture_status == "silence":
+                    await self._speak_feedback(
+                        "I'll go to sleep now. Say Sofi and we'll continue where we left off."
+                    )
+                    return
+                if capture_status == "unclear":
+                    await self._speak_feedback(
+                        "I couldn't understand that, so I'll stay awake a little longer."
+                    )
+                    continue
+                sleep_answer = followup.lower().strip(" .!?")
+                if sleep_answer in {"yes", "yes please", "stay awake", "keep listening"}:
+                    await self._speak_feedback("Okay, I'm still listening.")
+                    continue
+                if sleep_answer in {"no", "no thanks", "go to sleep", "sleep"}:
+                    await self._speak_feedback(
+                        "Okay. Say Sofi and we'll continue where we left off."
+                    )
+                    return
+            if capture_status == "unclear":
+                await self._speak_feedback(
+                    "I heard you, but I couldn't understand that. Please say it again."
+                )
+                continue
+
+            normalized = followup.lower().strip(" .!?")
+            if normalized in sleep_commands:
+                if self.display_mode:
+                    self._safe_print("\n💤 Returning to wake mode.\n")
+                return
+
+            await self._handle_transcript(followup)
+
     async def run_wake_word_loop(self) -> None:
         """
         Main production voice loop.
@@ -419,6 +576,8 @@ class VoiceOrchestrator:
                                 "\n⚡ INTERRUPTED BY 'SOFI'\n"
                             )
 
+                    await self._speak_feedback(await self._wake_greeting())
+
                     # --------------------------------------------------
                     # 3. COMMAND WAS SPOKEN IN SAME CHUNK
                     #
@@ -435,9 +594,7 @@ class VoiceOrchestrator:
                         await self._handle_transcript(
                             wake_text
                         )
-
-                        # The turn runs inside _handle_transcript,
-                        # so when it returns we go back to wake mode.
+                        await self._run_active_followups()
                         continue
 
                     # --------------------------------------------------
@@ -456,23 +613,18 @@ class VoiceOrchestrator:
                             f"({self.active_listening_timeout:.1f}s)\n"
                         )
 
-                    audio = await asyncio.to_thread(
-                        self.stt.record_active_command,
-                        self.active_listening_timeout,
-                    )
+                    capture_status, command_text = await self._capture_active_text()
 
-                    if audio.size == 0:
+                    if capture_status == "silence":
                         logger.info(
                             "[VOICE ORCHESTRATOR] "
                             "No command after wake word. "
                             "Returning to sleep."
                         )
 
-                        if self.display_mode:
-                            self._safe_print(
-                                "\n💤 No command. "
-                                "Returning to wake mode.\n"
-                            )
+                        await self._speak_feedback(
+                            "I didn't hear anything. Say Sofi when you're ready."
+                        )
 
                         if self.engine.state in (
                             ConversationState.INTERRUPTED,
@@ -482,33 +634,14 @@ class VoiceOrchestrator:
 
                         continue
 
-                    # --------------------------------------------------
-                    # 5. WHISPER COMMAND
-                    # --------------------------------------------------
-
-                    command_text = await asyncio.to_thread(
-                        self.stt.transcribe,
-                        audio,
-                    )
-
-                    command_text = (
-                        command_text.strip()
-                        if command_text
-                        else ""
-                    )
-
-                    if not command_text:
+                    if capture_status == "unclear":
                         logger.info(
                             "[VOICE ORCHESTRATOR] "
-                            "No command transcript."
+                            "Command audio could not be understood."
                         )
-
-                        if self.engine.state in (
-                            ConversationState.INTERRUPTED,
-                            ConversationState.CANCELLED,
-                        ):
-                            self.engine.reset_to_idle()
-
+                        await self._speak_feedback(
+                            "I heard you, but I couldn't understand that. Please say Sofi and try again."
+                        )
                         continue
 
                     # --------------------------------------------------
@@ -518,6 +651,7 @@ class VoiceOrchestrator:
                     await self._handle_transcript(
                         command_text
                     )
+                    await self._run_active_followups()
 
                 except asyncio.CancelledError:
                     raise

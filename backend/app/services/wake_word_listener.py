@@ -203,99 +203,66 @@ class WakeWordListener:
         )
 
         try:
-            with sd.InputStream(
-                samplerate=SAMPLE_RATE,
-                channels=CHANNELS,
-                dtype="float32",
-                blocksize=chunk_size,
-            ) as stream:
+            while self._running:
+                # Use a self-contained recording for each wake-word window.
+                # A persistent blocking InputStream overflows on some macOS
+                # devices while CPU-bound Whisper inference is running.
+                audio_chunk = sd.rec(
+                    chunk_size,
+                    samplerate=SAMPLE_RATE,
+                    channels=CHANNELS,
+                    dtype="float32",
+                    blocking=True,
+                ).flatten()
 
-                while self._running:
+                energy = self._energy(audio_chunk)
 
-                    audio_chunk, overflowed = stream.read(
-                        chunk_size
+                # Ignore obvious silence/noise.
+                if energy < self.min_energy:
+                    previous_audio = np.array([], dtype=np.float32)
+                    continue
+
+                if overlap_size > 0 and previous_audio.size:
+                    audio_for_whisper = np.concatenate(
+                        [previous_audio, audio_chunk]
                     )
+                else:
+                    audio_for_whisper = audio_chunk
 
-                    if overflowed:
-                        logger.warning(
-                            "[WAKE LISTENER] Microphone overflow"
-                        )
+                audio_for_whisper = self._prepare_audio(audio_for_whisper)
 
-                    audio_chunk = audio_chunk.flatten()
-
-                    energy = self._energy(
-                        audio_chunk
+                try:
+                    text = self.stt.transcribe(audio_for_whisper)
+                except Exception as error:
+                    logger.warning(
+                        "[WAKE LISTENER] Whisper wake check failed: %s",
+                        error,
                     )
-
-                    # Ignore obvious silence/noise.
-                    if energy < self.min_energy:
-                        continue
-
-                    if overlap_size > 0 and previous_audio.size:
-                        audio_for_whisper = np.concatenate(
-                            [
-                                previous_audio,
-                                audio_chunk,
-                            ]
-                        )
-                    else:
-                        audio_for_whisper = audio_chunk
-
-                    audio_for_whisper = self._prepare_audio(
-                        audio_for_whisper
-                    )
-
-                    try:
-                        text = self.stt.transcribe(
-                            audio_for_whisper
-                        )
-                    except Exception as error:
-                        logger.warning(
-                            "[WAKE LISTENER] Whisper wake check failed: %s",
-                            error,
-                        )
-
-                        previous_audio = (
-                            audio_chunk[-overlap_size:]
-                            if overlap_size > 0
-                            else np.array(
-                                [],
-                                dtype=np.float32,
-                            )
-                        )
-
-                        continue
-
-                    text = text.strip()
-
-                    if text:
-                        logger.info(
-                            "[WAKE LISTENER] Heard: '%s'",
-                            text,
-                        )
-
-                        if self.wake_word_service.detect(text):
-                            cleaned = (
-                                self.wake_word_service
-                                .strip_wake_word(text)
-                            )
-
-                            logger.info(
-                                "[WAKE LISTENER] Wake word detected. "
-                                "Command='%s'",
-                                cleaned,
-                            )
-
-                            return True, cleaned
-
                     previous_audio = (
                         audio_chunk[-overlap_size:]
                         if overlap_size > 0
-                        else np.array(
-                            [],
-                            dtype=np.float32,
-                        )
+                        else np.array([], dtype=np.float32)
                     )
+                    continue
+
+                text = text.strip()
+
+                if text:
+                    logger.info("[WAKE LISTENER] Heard: '%s'", text)
+
+                    if self.wake_word_service.detect(text):
+                        cleaned = self.wake_word_service.strip_wake_word(text)
+                        logger.info(
+                            "[WAKE LISTENER] Wake word detected. Command='%s'",
+                            cleaned,
+                        )
+                        return True, cleaned
+
+                previous_audio = (
+                    audio_chunk[-overlap_size:]
+                    if overlap_size > 0
+                    else np.array([], dtype=np.float32)
+                )
 
         finally:
             self._running = False

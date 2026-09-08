@@ -33,7 +33,11 @@ class Settings(BaseSettings):
     wake_chunk_duration: float = 1.5
     wake_overlap_duration: float = 0.5
     wake_min_energy: float = 0.0015
-    active_listening_timeout: float = 6.0
+    active_listening_timeout: float = 20.0
+    sleep_warning_timeout: float = 8.0
+
+    # Remote LLM
+    nvidia_timeout_seconds: float = 60.0
 
     # Frontend
     frontend_origin: str = "*"

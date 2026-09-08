@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import io
 import os
 import re
@@ -23,7 +24,8 @@ DEFAULT_MODEL = "small"
 CHUNK_DURATION = 0.1
 MAX_RECORDING_DURATION = 60.0
 
-SILENCE_DURATION = 5.0
+SILENCE_DURATION = 1.2
+INITIAL_SILENCE_TIMEOUT = 5.0
 NOISE_CALIBRATION_DURATION = 0.7
 
 SPEECH_MULTIPLIER = 2.5
@@ -65,6 +67,7 @@ class STTService:
         # by transcribe(), preventing duplicate conversation turns.
         self._on_speech_started = None
         self._on_transcript = None
+        self._callback_loop = None
 
         print("Whisper loaded.")
 
@@ -84,6 +87,10 @@ class STTService:
         to interrupt active TTS, LLM processing, or tool execution.
         """
         self._on_speech_started = callback
+        try:
+            self._callback_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._callback_loop = None
 
     def set_on_transcript(self, callback) -> None:
         """
@@ -207,7 +214,7 @@ class STTService:
     def record_until_silence(
         self,
         max_recording_duration: float = MAX_RECORDING_DURATION,
-        initial_silence_timeout: float = MAX_RECORDING_DURATION,
+        initial_silence_timeout: float = INITIAL_SILENCE_TIMEOUT,
     ) -> np.ndarray:
 
         max_recording_duration = max(
@@ -338,7 +345,15 @@ class STTService:
                             # VoiceOrchestrator immediately so
                             # active TTS or processing can stop.
                             if self._on_speech_started is not None:
-                                self._on_speech_started()
+                                callback_result = self._on_speech_started()
+                                if inspect.isawaitable(callback_result):
+                                    if self._callback_loop and self._callback_loop.is_running():
+                                        asyncio.run_coroutine_threadsafe(
+                                            callback_result,
+                                            self._callback_loop,
+                                        )
+                                    else:
+                                        asyncio.run(callback_result)
 
                             silence_start_time = None
 
@@ -821,20 +836,6 @@ class STTService:
             language=self.language,
             condition_on_previous_text=False,
             temperature=0,
-            initial_prompt=(
-                "You are transcribing a cooking "
-                "assistant conversation. "
-                "The speaker may talk about recipes, "
-                "ingredients, quantities, measurements, "
-                "temperatures, timers, cooking steps, "
-                "pots, pans, ovens, stoves, frying, "
-                "boiling, baking, roasting, chopping, "
-                "mixing, stirring, seasoning, salt, "
-                "pepper, oil, garlic, onion, chicken, "
-                "beef, vegetables, rice, pasta, sauces, "
-                "and cooking steps. "
-                "Preserve the speaker's actual words."
-            ),
         )
 
         text = self._clean_transcription(

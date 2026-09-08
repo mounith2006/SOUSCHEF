@@ -3,6 +3,7 @@ import logging
 import httpx
 from typing import List, Dict, Any, Optional
 from ..conversation.interfaces import LLMInterface
+from ..conversation.llm_protocol import COOKING_SYSTEM_PROMPT
 from ..config import get_settings
 
 logger = logging.getLogger("souschef.llm")
@@ -60,10 +61,7 @@ class OpenAILLMService(LLMInterface):
         messages = [
             {
                 "role": "system",
-                "content": (
-                    "You are SOUSCHEF, a real-time voice-native cooking assistant. "
-                    "Provide clear, concise, direct answers suitable for speech output."
-                ),
+                "content": COOKING_SYSTEM_PROMPT,
             }
         ]
 
@@ -85,7 +83,7 @@ class OpenAILLMService(LLMInterface):
             "model": self.model,
             "messages": messages,
             "temperature": 0.7,
-            "max_tokens": 150,
+            "max_tokens": 1200,
         }
 
         try:
@@ -125,18 +123,7 @@ class NvidiaLLMService(LLMInterface):
         if not self.api_key or "your_" in self.api_key.lower():
             raise LLMUnavailableError("NVIDIA_API_KEY environment variable is not configured.")
 
-        system_prompt = (
-            "You are SOUSCHEF, a friendly real-time voice cooking assistant.\n\n"
-            "Help users with recipes, ingredients, cooking techniques, timings, substitutions, meal ideas, and kitchen guidance.\n\n"
-            "Keep answers concise and natural because responses are spoken aloud.\n\n"
-            "Avoid unnecessarily long explanations.\n\n"
-            "Remember relevant recent conversation context.\n\n"
-            "If the user says hello or asks a general conversational question, respond naturally.\n\n"
-            "Example:\n\n"
-            "User: Hello\n\n"
-            "Assistant:\n"
-            "Hi! I'm SOUSCHEF. What would you like to cook today?"
-        )
+        system_prompt = COOKING_SYSTEM_PROMPT
 
         messages = [
             {
@@ -163,11 +150,11 @@ class NvidiaLLMService(LLMInterface):
             "model": self.model,
             "messages": messages,
             "temperature": 0.7,
-            "max_tokens": 150,
+            "max_tokens": 1200,
         }
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=self.settings.nvidia_timeout_seconds) as client:
                 response = await client.post(
                     self.api_url,
                     headers=headers,
@@ -218,4 +205,3 @@ def get_llm_service(provider: Optional[str] = None) -> LLMInterface:
         raise LLMUnavailableError(
             f"Unsupported LLM provider: '{selected}'. Supported providers are: local, openai, nvidia."
         )
-
