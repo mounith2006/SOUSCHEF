@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import io
 import os
 import re
@@ -21,9 +22,18 @@ CHANNELS = 1
 DEFAULT_MODEL = "small"
 
 CHUNK_DURATION = 0.1
+
+# Maximum amount of time a normal recording may continue.
 MAX_RECORDING_DURATION = 60.0
 
-SILENCE_DURATION = 5.0
+# Maximum amount of time to wait for the user to begin speaking.
+# This is separate from SILENCE_DURATION, which controls how long
+# the user may pause after speech has already started.
+INITIAL_SILENCE_TIMEOUT = 5.0
+
+# Allow natural pauses while speaking.
+SILENCE_DURATION = 4.0
+
 NOISE_CALIBRATION_DURATION = 0.7
 
 SPEECH_MULTIPLIER = 2.5
@@ -77,11 +87,7 @@ class STTService:
         Register a callback invoked when VAD detects the beginning
         of user speech.
 
-        The callback is synchronous because VAD runs inside the
-        synchronous microphone-recording loop.
-
-        ConversationEngine / VoiceOrchestrator can use this callback
-        to interrupt active TTS, LLM processing, or tool execution.
+        The callback may be synchronous or asynchronous.
         """
         self._on_speech_started = callback
 
@@ -90,25 +96,75 @@ class STTService:
         Register a callback for final transcripts.
 
         Transcript delivery is currently owned by VoiceOrchestrator,
-        so this method only stores the callback. It is intentionally
-        not invoked automatically by transcribe(), because doing so
-        would cause VoiceOrchestrator's existing transcript handling
-        to process the same transcript twice.
+        so this callback is not automatically invoked by transcribe().
+        This prevents the same transcript from creating duplicate
+        conversation turns.
         """
         self._on_transcript = callback
+
+    async def notify_speech_started(self) -> None:
+        """
+        Notify the registered speech-start callback.
+
+        This is useful for integration tests and for components that
+        explicitly need to emit a speech-start event.
+        """
+
+        if self._on_speech_started is None:
+            return
+
+        result = self._on_speech_started()
+
+        if inspect.isawaitable(result):
+            await result
+
+    async def notify_transcript(self, text: str) -> None:
+        """
+        Notify the registered transcript callback exactly once.
+
+        This helper does not cause transcribe() to automatically invoke
+        the callback. VoiceOrchestrator owns normal transcript delivery.
+        """
+
+        if self._on_transcript is None:
+            return
+
+        clean_text = self._clean_transcription(text)
+
+        if not clean_text:
+            return
+
+        result = self._on_transcript(clean_text)
+
+        if inspect.isawaitable(result):
+            await result
+
+    async def simulate_speech_started(self) -> None:
+        """
+        Test helper that simulates a VAD speech-start event.
+        """
+
+        await self.notify_speech_started()
 
     # =========================================================
     # LOCAL MICROPHONE / VAD
     # =========================================================
 
-    def _get_audio_energy(self, audio: np.ndarray) -> float:
+    def _get_audio_energy(
+        self,
+        audio: np.ndarray,
+    ) -> float:
         if audio.size == 0:
             return 0.0
 
         audio = audio.astype(np.float32)
 
         return float(
-            np.sqrt(np.mean(np.square(audio)))
+            np.sqrt(
+                np.mean(
+                    np.square(audio)
+                )
+            )
         )
 
     def _calibrate_noise(
@@ -133,7 +189,9 @@ class STTService:
             )
 
             if overflowed:
-                print("⚠️ Audio overflow during calibration")
+                print(
+                    "⚠️ Audio overflow during calibration"
+                )
 
             audio_chunk = audio_chunk.flatten()
 
@@ -174,7 +232,9 @@ class STTService:
         audio = audio - np.mean(audio)
 
         peak = float(
-            np.max(np.abs(audio))
+            np.max(
+                np.abs(audio)
+            )
         )
 
         if peak <= 0:
@@ -293,7 +353,9 @@ class STTService:
                 )
 
                 if overflowed:
-                    print("⚠️ Audio buffer overflow")
+                    print(
+                        "⚠️ Audio buffer overflow"
+                    )
 
                 audio_chunk = audio_chunk.flatten()
 
@@ -306,7 +368,9 @@ class STTService:
                 )
 
                 smoothed_energy = float(
-                    np.mean(energy_history)
+                    np.mean(
+                        energy_history
+                    )
                 )
 
                 if not speech_started:
@@ -338,7 +402,30 @@ class STTService:
                             # VoiceOrchestrator immediately so
                             # active TTS or processing can stop.
                             if self._on_speech_started is not None:
-                                self._on_speech_started()
+
+                                callback_result = (
+                                    self._on_speech_started()
+                                )
+
+                                # ConversationEngine's callback is
+                                # asynchronous. If this VAD loop is
+                                # running inside an asyncio event loop,
+                                # schedule it without blocking audio
+                                # capture.
+                                if inspect.isawaitable(
+                                    callback_result
+                                ):
+                                    try:
+                                        loop = (
+                                            asyncio.get_running_loop()
+                                        )
+                                    except RuntimeError:
+                                        loop = None
+
+                                    if loop is not None:
+                                        loop.create_task(
+                                            callback_result
+                                        )
 
                             silence_start_time = None
 
@@ -418,7 +505,9 @@ class STTService:
 
         if not chunks:
 
-            print("⚠️ No speech detected.")
+            print(
+                "⚠️ No speech detected."
+            )
 
             return np.array(
                 [],

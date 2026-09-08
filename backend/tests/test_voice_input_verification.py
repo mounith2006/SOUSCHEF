@@ -162,9 +162,13 @@ class TestVoiceInputVerification(unittest.IsolatedAsyncioTestCase):
         assert turn1.state == ConversationState.CANCELLED
 
     async def test_H_stt_timing_constants_responsive_defaults(self):
-        """Verify STT constants guarantee responsive voice recording."""
+        """Verify STT constants support natural pauses while remaining responsive."""
         from app.services import stt_service
-        self.assertLessEqual(stt_service.SILENCE_DURATION, 1.5)
+
+        # SOUSCHEF should tolerate natural pauses while the user is speaking.
+        self.assertGreaterEqual(stt_service.SILENCE_DURATION, 4.0)
+        self.assertLessEqual(stt_service.SILENCE_DURATION, 5.0)
+
         self.assertGreaterEqual(stt_service.MAX_RECORDING_DURATION, 15.0)
         self.assertLessEqual(stt_service.INITIAL_SILENCE_TIMEOUT, 5.0)
 
