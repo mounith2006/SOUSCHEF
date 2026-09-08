@@ -567,3 +567,9 @@ class VoiceOrchestrator:
         """
 
         await self.run_wake_word_loop()
+if __name__ == "__main__":
+    asyncio.run(
+        VoiceOrchestrator(
+            display_mode=True
+        ).run_voice_loop()
+    )       
