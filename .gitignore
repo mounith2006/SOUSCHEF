@@ -3,4 +3,14 @@
 backend/.env
 backend/.venv/
 __pycache__/
+*.pyc
+
+# Frontend
+node_modules/
+dist/
+
+# Editor files
+.vscode/
+
 .pytest_cache/
+

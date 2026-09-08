@@ -1,23 +1,26 @@
-# SousChef voice API
+# SOUSCHEF Voice & Cooking Engine API
 
-This first milestone is deliberately small: `POST /api/voice/synthesize` sends
-short text to Rime and streams the resulting WAV bytes back to the caller. The
-Rime key stays on the server; recipe logic, speech recognition, and UI are not
-part of this step.
+This backend integrates voice processing (Whisper STT, Rime TTS, NVIDIA NIM LLM) and the cooking session engine with real-time Spoonacular recipe integration.
 
-## Run it
+Runtime recipes are fetched directly from Spoonacular API. The application does not ship with or fall back to an internal recipe catalogue (`data/recipes.json` has been removed).
+
+## Quick Start
 
 ```bash
 cd backend
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# Set RIME_API_KEY in .env
+# Configure environment variables in .env
 uvicorn app.main:app --reload
 ```
 
-In a second terminal, save a real audio file:
+Open `http://127.0.0.1:8000/docs` for the interactive API documentation.
+
+## Voice Synthesize Endpoint
+
+`POST /api/voice/synthesize` sends short text to Rime and streams the resulting WAV bytes back to the caller.
 
 ```bash
 curl --fail --request POST http://127.0.0.1:8000/api/voice/synthesize \
@@ -26,12 +29,9 @@ curl --fail --request POST http://127.0.0.1:8000/api/voice/synthesize \
   --output souschef.wav
 ```
 
-Play `souschef.wav` with any audio player. The response is intentionally a WAV
-file, which browsers can play directly. Voice/model/language defaults live in
-`.env.example` so a demo can be reproduced without hard-coding credentials.
-
-## Verify without a Rime key
+## Running Tests
 
 ```bash
 pytest
 ```
+

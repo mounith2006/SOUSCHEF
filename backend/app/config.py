@@ -13,7 +13,7 @@ else:
 
 
 class Settings(BaseSettings):
-    """Configuration for the voice pipeline."""
+    """Configuration for Voice and Cooking Engine backend."""
 
     model_config = SettingsConfigDict(
         env_file=_env_path if os.path.exists(_env_path) else ".env",
@@ -43,9 +43,12 @@ class Settings(BaseSettings):
     nvidia_api_key: str | None = None
     llm_model: str = "gpt-4o-mini"
 
+    # Spoonacular API
+    spoonacular_api_key: str | None = None
+    spoonacular_api_url: str = "https://api.spoonacular.com"
+    spoonacular_timeout_seconds: float = 15.0
 
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
-
