@@ -53,7 +53,49 @@ class STTService:
 
         self.language = language
 
+        # Registered callbacks for conversation-layer integration.
+        #
+        # _on_speech_started is invoked by VAD as soon as the user
+        # begins speaking. This allows ConversationEngine to interrupt
+        # an active response.
+        #
+        # _on_transcript is registered for consumers that own transcript
+        # delivery. VoiceOrchestrator currently owns that delivery path,
+        # so this callback is registered but is not automatically invoked
+        # by transcribe(), preventing duplicate conversation turns.
+        self._on_speech_started = None
+        self._on_transcript = None
+
         print("Whisper loaded.")
+
+    # =========================================================
+    # CALLBACK REGISTRATION
+    # =========================================================
+
+    def set_on_speech_started(self, callback) -> None:
+        """
+        Register a callback invoked when VAD detects the beginning
+        of user speech.
+
+        The callback is synchronous because VAD runs inside the
+        synchronous microphone-recording loop.
+
+        ConversationEngine / VoiceOrchestrator can use this callback
+        to interrupt active TTS, LLM processing, or tool execution.
+        """
+        self._on_speech_started = callback
+
+    def set_on_transcript(self, callback) -> None:
+        """
+        Register a callback for final transcripts.
+
+        Transcript delivery is currently owned by VoiceOrchestrator,
+        so this method only stores the callback. It is intentionally
+        not invoked automatically by transcribe(), because doing so
+        would cause VoiceOrchestrator's existing transcript handling
+        to process the same transcript twice.
+        """
+        self._on_transcript = callback
 
     # =========================================================
     # LOCAL MICROPHONE / VAD
@@ -292,6 +334,12 @@ class STTService:
 
                             speech_started = True
 
+                            # Notify ConversationEngine /
+                            # VoiceOrchestrator immediately so
+                            # active TTS or processing can stop.
+                            if self._on_speech_started is not None:
+                                self._on_speech_started()
+
                             silence_start_time = None
 
                             chunks.extend(
@@ -302,7 +350,6 @@ class STTService:
 
                         speech_start_time = None
 
-                    # IMPORTANT:
                     # If the active command window expires
                     # before the user starts speaking, stop here.
                     if (
@@ -815,3 +862,7 @@ class STTService:
         return self.transcribe(
             audio
         )
+
+
+# Backwards-compatible service name used by ConversationService.
+DefaultSTTService = STTService
