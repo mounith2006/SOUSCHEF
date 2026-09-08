@@ -90,6 +90,10 @@ class STTService:
         The callback may be synchronous or asynchronous.
         """
         self._on_speech_started = callback
+        try:
+            self._callback_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._callback_loop = None
 
     def set_on_transcript(self, callback) -> None:
         """
@@ -416,15 +420,14 @@ class STTService:
                                     callback_result
                                 ):
                                     try:
-                                        loop = (
-                                            asyncio.get_running_loop()
-                                        )
-                                    except RuntimeError:
+                                        loop = getattr(self, "_callback_loop", None)
+                                    except Exception:
                                         loop = None
 
-                                    if loop is not None:
-                                        loop.create_task(
-                                            callback_result
+                                    if loop is not None and loop.is_running():
+                                        asyncio.run_coroutine_threadsafe(
+                                            callback_result,
+                                            loop
                                         )
 
                             silence_start_time = None

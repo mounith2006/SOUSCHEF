@@ -60,6 +60,7 @@ class VoiceOrchestrator:
 
         self.session_id = session_id
         self.display_mode = display_mode
+        self._background_tasks = set()
 
         self.tts = tts or RimeTTSService()
         self.stt = stt or DefaultSTTService()
@@ -211,6 +212,23 @@ class VoiceOrchestrator:
 
         return turn
 
+    async def _process_transcript_background(self, text: str) -> None:
+        try:
+            await self._handle_transcript(text)
+        except asyncio.CancelledError:
+            pass
+        except Exception as error:
+            logger.error(
+                "[VOICE ORCHESTRATOR] Background processing error: %s",
+                error,
+                exc_info=True,
+            )
+
+    def _start_background_processing(self, text: str) -> None:
+        task = asyncio.create_task(self._process_transcript_background(text))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
     async def process_user_utterance(
         self,
         text: str,
@@ -311,7 +329,7 @@ class VoiceOrchestrator:
         )
 
         text = (
-            await self.stt.listen_and_transcribe()
+            await asyncio.to_thread(self.stt.listen_and_transcribe)
         )
 
         # Callback may already have created the turn.
@@ -432,12 +450,12 @@ class VoiceOrchestrator:
                     # --------------------------------------------------
 
                     if wake_text:
-                        await self._handle_transcript(
+                        self._start_background_processing(
                             wake_text
                         )
 
-                        # The turn runs inside _handle_transcript,
-                        # so when it returns we go back to wake mode.
+                        # The turn runs inside _process_transcript_background,
+                        # so we go back to wake mode immediately.
                         continue
 
                     # --------------------------------------------------
@@ -512,10 +530,10 @@ class VoiceOrchestrator:
                         continue
 
                     # --------------------------------------------------
-                    # 6. PROCESS COMMAND
+                    # 6. PROCESS COMMAND IN BACKGROUND
                     # --------------------------------------------------
 
-                    await self._handle_transcript(
+                    self._start_background_processing(
                         command_text
                     )
 
@@ -540,6 +558,12 @@ class VoiceOrchestrator:
             self._wake_loop_running = False
             self.wake_listener.stop()
 
+            # Clean up tracking tasks
+            for task in list(self._background_tasks):
+                task.cancel()
+            if self._background_tasks:
+                await asyncio.gather(*self._background_tasks, return_exceptions=True)
+
             logger.info(
                 "[VOICE ORCHESTRATOR] "
                 "Wake-word loop stopped."
@@ -552,6 +576,11 @@ class VoiceOrchestrator:
 
         self._wake_loop_running = False
         self.wake_listener.stop()
+
+        for task in list(self._background_tasks):
+            task.cancel()
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
 
         logger.info(
             "[VOICE ORCHESTRATOR] "
@@ -568,8 +597,28 @@ class VoiceOrchestrator:
 
         await self.run_wake_word_loop()
 if __name__ == "__main__":
-    asyncio.run(
-        VoiceOrchestrator(
-            display_mode=True
-        ).run_voice_loop()
-    )       
+    from .llm_service import get_llm_service
+    
+    async def main():
+        settings = get_settings()
+        stt = DefaultSTTService()
+        tts = RimeTTSService()
+        llm = get_llm_service(provider=settings.llm_provider)
+        
+        engine = get_conversation_engine(
+            session_id="voice_demo_session",
+            tts=tts,
+            stt=stt,
+            llm=llm,
+        )
+        
+        orchestrator = VoiceOrchestrator(
+            engine=engine,
+            stt=stt,
+            tts=tts,
+            display_mode=True,
+        )
+        
+        await orchestrator.run_voice_loop()
+
+    asyncio.run(main())
