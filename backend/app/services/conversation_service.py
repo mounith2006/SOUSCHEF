@@ -22,10 +22,15 @@ class SessionConversationManager:
             tts_inst = tts or RimeTTSService()
             llm_inst = llm or get_llm_service()
             stt_inst = stt or DefaultSTTService()
+            
+            from ..tools.recipe_tools import RecipeToolRunner
+            tool_runner = RecipeToolRunner()
+            
             self._engines[session_id] = ConversationEngine(
                 tts=tts_inst,
                 llm=llm_inst,
                 stt=stt_inst,
+                tool_runner=tool_runner,
                 session_id=session_id,
             )
         return self._engines[session_id]

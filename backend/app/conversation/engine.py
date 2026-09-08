@@ -577,6 +577,61 @@ class ConversationEngine:
             )
 
             history = self.context.get_messages()
+            
+            # -------------------------------------------------
+            # INTENT ROUTING & TOOL EXECUTION
+            # -------------------------------------------------
+            from .intent import detect_intent, Intent
+            
+            intent, query = detect_intent(turn.user_input)
+            if intent != Intent.UNKNOWN and self.tool_runner:
+                tool_name = None
+                tool_args = {}
+
+                if intent in (Intent.START_RECIPE, Intent.GET_RECIPE):
+                    tool_name = "find_recipe"
+                    tool_args = {"query": query}
+                elif intent == Intent.NEXT_STEP:
+                    if self.context.active_recipe:
+                        tool_name = "get_step"
+                        tool_args = {
+                            "recipe_name": self.context.active_recipe,
+                            "step_index": self.context.active_step + 1 if self.context.active_step is not None else 0
+                        }
+                    else:
+                        tool_name = "no_recipe_active"
+                elif intent in (Intent.REPEAT_STEP, Intent.CURRENT_STEP):
+                    if self.context.active_recipe:
+                        tool_name = "get_step"
+                        tool_args = {
+                            "recipe_name": self.context.active_recipe,
+                            "step_index": self.context.active_step if self.context.active_step is not None else 0
+                        }
+                    else:
+                        tool_name = "no_recipe_active"
+
+                if tool_name:
+                    tool_result = await self.execute_tool_task(turn, tool_name, tool_args)
+                    
+                    if not self.is_current_turn(turn.turn_id):
+                        log_event(
+                            EventType.STALE_RESPONSE_DISCARDED,
+                            turn_id=turn.turn_id,
+                            detail="Stale turn after tool execution"
+                        )
+                        return
+                        
+                    if tool_result:
+                        action = tool_result.get("action")
+                        # Only START_RECIPE updates active recipe. GET_RECIPE just retrieves it.
+                        if action == "found_recipe" and intent == Intent.START_RECIPE:
+                            self.context.active_recipe = tool_result.get("recipe_name")
+                            self.context.active_step = 0
+                        elif action == "step_retrieved":
+                            self.context.active_step = tool_result.get("step_index")
+                            
+                        # Append tool context for the LLM
+                        history.append({"role": "system", "content": f"[TOOL RESULT: {tool_result}]"})
 
             # -------------------------------------------------
             # Generate LLM response.

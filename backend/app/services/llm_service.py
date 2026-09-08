@@ -20,6 +20,53 @@ class LocalTestLLM(LLMInterface):
 
     async def generate_response(self, user_input: str, conversation_history: List[Dict[str, str]]) -> str:
         text = user_input.lower()
+        
+        # Check if there is a TOOL RESULT in the history
+        tool_result_str = None
+        for msg in reversed(conversation_history):
+            if msg["role"] == "system" and "[TOOL RESULT:" in msg["content"]:
+                tool_result_str = msg["content"]
+                break
+                
+        if tool_result_str:
+            import ast
+            try:
+                # Extract the dict string
+                dict_str = tool_result_str.split("[TOOL RESULT: ")[1].rstrip("]")
+                tool_data = ast.literal_eval(dict_str)
+                status = tool_data.get("status")
+                action = tool_data.get("action")
+                
+                if status == "success":
+                    if action == "found_recipe":
+                        name = tool_data.get("recipe_name")
+                        ingredients = ", ".join(tool_data.get("ingredients", []))
+                        first_step = tool_data.get("first_step", "")
+                        # Return formatted cooking intro
+                        response = f"Let's make {name}. You'll need {ingredients}. First, {first_step.lower()}"
+                        logger.info(f"[LOCAL LLM RESPONSE] '{response}'")
+                        return response
+                        
+                    elif action == "step_retrieved":
+                        step_text = tool_data.get("step_text", "")
+                        response = f"Next, {step_text.lower()}"
+                        logger.info(f"[LOCAL LLM RESPONSE] '{response}'")
+                        return response
+                        
+                    elif action == "recipe_complete":
+                        response = tool_data.get("message", "The recipe is complete.")
+                        logger.info(f"[LOCAL LLM RESPONSE] '{response}'")
+                        return response
+                
+                elif status == "error":
+                    msg = tool_data.get("message", "Sorry, I had an error with that recipe.")
+                    logger.info(f"[LOCAL LLM RESPONSE] '{msg}'")
+                    return msg
+                    
+            except Exception as e:
+                logger.error(f"Error parsing tool result in LocalTestLLM: {e}")
+
+        # Original fallbacks
         if "how long" in text and "pasta" in text:
             response = "For most pasta, cook it for about eight to twelve minutes."
         elif "how long" in text:
