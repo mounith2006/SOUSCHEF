@@ -179,3 +179,165 @@ async def test_wake_listener_concurrency(orchestrator, engine, mock_llm):
     task.cancel()
     for t in list(orchestrator._background_tasks):
         t.cancel()
+
+@pytest.mark.asyncio
+async def test_local_cooking_command_tts_is_interruptible(orchestrator, engine, mock_tts):
+    """
+    Regression test: Local cooking command creates an interruptible turn in SPEAKING state,
+    and 'Sofi, wait!' stops local TTS and becomes the new authoritative turn.
+    """
+    mock_runner = AsyncMock()
+    mock_runner.execute_tool.return_value = {
+        "ok": True,
+        "tool": "get_current_step",
+        "data": {"instruction": "Simmer sauce on low heat for 10 minutes"},
+    }
+    engine.tool_runner = mock_runner
+
+    # Simulate slow TTS playback
+    async def slow_speak(*args, **kwargs):
+        await asyncio.sleep(0.5)
+
+    mock_tts.speak.side_effect = slow_speak
+
+    # Launch local cooking command
+    local_task = asyncio.create_task(
+        orchestrator.process_user_utterance("current step")
+    )
+
+    # Allow it to process tool locally and reach SPEAKING state
+    await asyncio.sleep(0.05)
+    assert engine.state == ConversationState.SPEAKING
+    assert engine.current_turn is not None
+    assert "Simmer sauce" in (engine.current_turn.response_text or "")
+
+    # Interruption with "Sofi, wait!"
+    await orchestrator.process_wake_command("wait!")
+
+    # Local TTS must be stopped
+    mock_tts.stop.assert_awaited()
+
+    # "wait!" becomes the new authoritative turn
+    assert engine.current_turn.user_input == "wait!"
+    assert engine.state == ConversationState.IDLE
+
+    local_task.cancel()
+    try:
+        await local_task
+    except asyncio.CancelledError:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_stale_local_cooking_feedback_cannot_speak_after_newer_turn(orchestrator, engine, mock_tts):
+    """
+    Regression test: Stale local cooking command feedback cannot speak
+    after an interruption and a newer turn has become authoritative.
+    """
+    tool_started = asyncio.Event()
+    tool_can_finish = asyncio.Event()
+
+    mock_runner = AsyncMock()
+    async def slow_execute(name, args):
+        tool_started.set()
+        await tool_can_finish.wait()
+        return {
+            "ok": True,
+            "tool": name,
+            "data": {"instruction": "Add minced garlic to pan"},
+        }
+
+    mock_runner.execute_tool.side_effect = slow_execute
+    engine.tool_runner = mock_runner
+
+    # Start local command A
+    task_a = asyncio.create_task(
+        orchestrator._try_local_cooking_command("what is next")
+    )
+    await tool_started.wait()
+
+    # Interruption occurs and Turn B starts
+    await orchestrator.process_wake_command("wait!")
+    assert engine.current_turn.user_input == "wait!"
+    turn_b_id = engine.current_turn_id
+
+    # Allow local tool A to finish
+    tool_can_finish.set()
+    turn_a = await task_a
+
+    # Turn A was discarded as stale
+    assert turn_a is None
+
+    # Stale local feedback from A must not have spoken
+    for call in mock_tts.speak.call_args_list:
+        spoken_text = call[0][0]
+        assert "Add minced garlic" not in spoken_text
+
+    assert engine.current_turn_id == turn_b_id
+
+
+@pytest.mark.asyncio
+async def test_chicken_pasta_physical_interruption_flow(orchestrator, engine, mock_tts, mock_llm):
+    """
+    Simulates the exact physical demo flow:
+    1. User: "Let's cook chicken pasta"
+    2. Rime TTS begins speaking Chicken Pasta response
+    3. User barge-in: "Sofi, wait!"
+    4. Wake word detected, active turn cancelled, Rime TTS stopped
+    5. "wait!" processed as new authoritative turn
+    6. Old Chicken Pasta response does not resume
+    """
+    mock_llm.generate_response.side_effect = lambda query, history: (
+        "Here is the recipe for chicken pasta. Step one: boil water."
+        if "pasta" in query
+        else "I am paused and waiting."
+    )
+
+    speaking_event = asyncio.Event()
+    tts_stopped = asyncio.Event()
+
+    async def slow_speak(text, *args, **kwargs):
+        if "pasta" in text:
+            speaking_event.set()
+            try:
+                await asyncio.sleep(2.0)
+            except asyncio.CancelledError:
+                raise
+        else:
+            await asyncio.sleep(0.01)
+
+    async def mock_stop():
+        tts_stopped.set()
+
+    mock_tts.speak.side_effect = slow_speak
+    mock_tts.stop.side_effect = mock_stop
+
+    # 1. Start "Let's cook chicken pasta"
+    pasta_task = asyncio.create_task(
+        orchestrator.process_user_utterance("Let's cook chicken pasta")
+    )
+    await speaking_event.wait()
+
+    # Rime is currently speaking
+    assert engine.state == ConversationState.SPEAKING
+    pasta_turn = engine.current_turn
+    assert "chicken pasta" in pasta_turn.user_input
+
+    # 2. While speaking, user interrupts with "Sofi, wait!"
+    cleaned = orchestrator.wake_word_service.strip_wake_word("Sofi, wait!")
+    assert cleaned == "wait!"
+
+    # Process wake command
+    wait_turn = await orchestrator.process_wake_command(cleaned)
+
+    # 3. Verify Rime stopped
+    assert tts_stopped.is_set()
+    assert pasta_turn.is_cancelled
+
+    # 4. "wait!" processed as new authoritative turn
+    assert engine.current_turn.user_input == "wait!"
+    assert engine.current_turn.response_text == "I am paused and waiting."
+
+    # 5. Old Chicken Pasta turn does not resume
+    await pasta_task
+    assert engine.current_turn.user_input == "wait!"

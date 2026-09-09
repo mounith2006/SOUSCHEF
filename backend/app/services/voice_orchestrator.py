@@ -209,12 +209,13 @@ class VoiceOrchestrator:
                 f"🎤 YOU: {clean_text}\n"
             )
 
-        if await self._try_local_cooking_command(clean_text):
-            return None
-
-        turn = await self.engine.handle_user_input(
-            clean_text
-        )
+        local_turn = await self._try_local_cooking_command(clean_text)
+        if local_turn is not None:
+            turn = local_turn
+        else:
+            turn = await self.engine.handle_user_input(
+                clean_text
+            )
 
         if (
             self.display_mode
@@ -229,11 +230,11 @@ class VoiceOrchestrator:
 
         return turn
 
-    async def _try_local_cooking_command(self, text: str) -> bool:
+    async def _try_local_cooking_command(self, text: str) -> Optional[Turn]:
         """Handle common state commands without a slow remote LLM round trip."""
         runner = self.engine.tool_runner
         if runner is None:
-            return False
+            return None
 
         normalized = text.lower().strip(" .!?")
         tool_name = ""
@@ -258,11 +259,21 @@ class VoiceOrchestrator:
                 arguments = {"duration_seconds": duration, "label": "Cooking timer"}
 
         if not tool_name:
-            return False
+            return None
 
+        start_turn_id = self.engine.current_turn_id
         result = await runner.execute_tool(tool_name, arguments)
         if not isinstance(result, dict) or not result.get("ok"):
-            return False
+            return None
+
+        if self.engine.current_turn_id != start_turn_id or self.engine.state in (
+            ConversationState.INTERRUPTED,
+            ConversationState.CANCELLED,
+        ):
+            logger.info(
+                "[VOICE ORCHESTRATOR] Discarding local cooking result due to interruption/new turn"
+            )
+            return None
 
         data = result.get("data")
         if tool_name == "get_current_step":
@@ -288,14 +299,11 @@ class VoiceOrchestrator:
                 else "You have no active timers."
             )
 
-        await self._speak_feedback(response)
-        return True
+        return await self.engine.handle_user_input(text, direct_response=response)
 
     async def _speak_feedback(self, text: str) -> None:
-        """Speak local voice-state feedback without spending an LLM request."""
-        if self.display_mode:
-            self._safe_print(f"🤖 SOUSCHEF: {text}\n")
-        await self.tts.speak(text)
+        """Speak local voice-state feedback through the standard engine lifecycle."""
+        await self.engine.handle_user_input(text, direct_response=text)
 
     async def _wake_greeting(self) -> str:
         """Resume the active cooking step when a sleeping session is awakened."""
@@ -719,34 +727,3 @@ class VoiceOrchestrator:
         """
 
         await self.run_wake_word_loop()
-
-
-if __name__ == "__main__":
-    try:
-        from .llm_service import get_llm_service
-    except ImportError:
-        from app.services.llm_service import get_llm_service
-
-    async def main():
-        settings = get_settings()
-        stt = DefaultSTTService()
-        tts = RimeTTSService()
-        llm = get_llm_service(provider=settings.llm_provider)
-
-        engine = get_conversation_engine(
-            session_id="voice_demo_session",
-            tts=tts,
-            stt=stt,
-            llm=llm,
-        )
-
-        orchestrator = VoiceOrchestrator(
-            engine=engine,
-            stt=stt,
-            tts=tts,
-            display_mode=True,
-        )
-
-        await orchestrator.run_voice_loop()
-
-    asyncio.run(main())

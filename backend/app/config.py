@@ -30,8 +30,8 @@ class Settings(BaseSettings):
     whisper_timeout_seconds: float = 120.0
 
     # Wake word / active listening
-    wake_chunk_duration: float = 1.5
-    wake_overlap_duration: float = 0.5
+    wake_chunk_duration: float = 0.8
+    wake_overlap_duration: float = 0.3
     wake_min_energy: float = 0.0015
     active_listening_timeout: float = 20.0
     sleep_warning_timeout: float = 8.0
