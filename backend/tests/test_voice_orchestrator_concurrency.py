@@ -204,7 +204,7 @@ async def test_multiple_rapid_interruptions():
 
     orchestrator = VoiceOrchestrator(
         engine=engine,
-        stt=AsyncMock(),
+        stt=AsyncMock(spec=STTService),
         tts=mock_tts,
         display_mode=False
     )
@@ -231,7 +231,7 @@ async def test_background_task_cleanup():
     engine = AsyncMock(spec=ConversationEngine)
     orchestrator = VoiceOrchestrator(
         engine=engine,
-        stt=AsyncMock(),
+        stt=AsyncMock(spec=STTService),
         tts=AsyncMock(),
         display_mode=False
     )
