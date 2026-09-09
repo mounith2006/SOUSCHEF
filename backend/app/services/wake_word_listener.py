@@ -54,9 +54,11 @@ class WakeWordListener:
         self,
         stt: STTService,
         wake_word_service: Optional[WakeWordService] = None,
-        chunk_duration: float = 1.5,
-        overlap_duration: float = 0.5,
+        chunk_duration: float = 0.5,
+        overlap_duration: float = 1.5,
+        buffer_duration: float = 2.0,
         min_energy: float = 0.0015,
+        **kwargs,
     ):
         self.stt = stt
         self.wake_word_service = (
@@ -64,13 +66,18 @@ class WakeWordListener:
         )
 
         self.chunk_duration = max(
-            0.5,
+            0.3,
             float(chunk_duration),
         )
 
-        self.overlap_duration = min(
-            max(0.0, float(overlap_duration)),
-            self.chunk_duration * 0.75,
+        self.buffer_duration = max(
+            1.5,
+            float(buffer_duration),
+        )
+
+        self.overlap_duration = max(
+            0.0,
+            float(overlap_duration),
         )
 
         self.min_energy = max(
@@ -79,6 +86,7 @@ class WakeWordListener:
         )
 
         self._running = False
+        self._rolling_buffer = np.array([], dtype=np.float32)
 
     @property
     def running(self) -> bool:
@@ -91,8 +99,11 @@ class WakeWordListener:
         The active microphone read will finish its current chunk,
         then the loop exits.
         """
-
         self._running = False
+
+    def reset(self) -> None:
+        """Clear rolling buffer context."""
+        self._rolling_buffer = np.array([], dtype=np.float32)
 
     def _energy(self, audio: np.ndarray) -> float:
         """
@@ -120,7 +131,7 @@ class WakeWordListener:
         Normalize microphone audio before Whisper.
         """
 
-        if audio.size == 0:
+        if audio is None or getattr(audio, "size", 0) == 0:
             return np.array(
                 [],
                 dtype=np.float32,
@@ -155,40 +166,23 @@ class WakeWordListener:
         self,
     ) -> Tuple[bool, str]:
         """
-        Blocking continuous wake-word loop.
+        Blocking continuous wake-word loop using a rolling audio buffer.
 
         Returns:
-
             (True, text_after_wake_word)
-
         when wake word is detected.
 
         Examples:
-
-            Whisper:
-                "Sofi"
-
-            returns:
-                (True, "")
-
-            Whisper:
-                "Sofi, how much salt?"
-
-            returns:
-                (True, "how much salt?")
+            Whisper: "Sofi" -> (True, "")
+            Whisper: "Sophie wait!" -> (True, "wait!")
+            Whisper: "Oh, Fie - let's cook chicken pasta" -> (True, "let's cook chicken pasta")
         """
-
-        chunk_size = int(
+        chunk_samples = int(
             self.chunk_duration * SAMPLE_RATE
         )
 
-        overlap_size = int(
-            self.overlap_duration * SAMPLE_RATE
-        )
-
-        previous_audio = np.array(
-            [],
-            dtype=np.float32,
+        max_buffer_samples = int(
+            self.buffer_duration * SAMPLE_RATE
         )
 
         self._running = True
@@ -204,32 +198,38 @@ class WakeWordListener:
 
         try:
             while self._running:
-                # Use a self-contained recording for each wake-word window.
-                # A persistent blocking InputStream overflows on some macOS
-                # devices while CPU-bound Whisper inference is running.
                 audio_chunk = sd.rec(
-                    chunk_size,
+                    chunk_samples,
                     samplerate=SAMPLE_RATE,
                     channels=CHANNELS,
                     dtype="float32",
                     blocking=True,
                 ).flatten()
 
-                energy = self._energy(audio_chunk)
+                if not self._running:
+                    break
 
-                # Ignore obvious silence/noise.
-                if energy < self.min_energy:
-                    previous_audio = np.array([], dtype=np.float32)
+                if audio_chunk.size == 0:
                     continue
 
-                if overlap_size > 0 and previous_audio.size:
-                    audio_for_whisper = np.concatenate(
-                        [previous_audio, audio_chunk]
+                if self._rolling_buffer.size > 0:
+                    self._rolling_buffer = np.concatenate(
+                        [self._rolling_buffer, audio_chunk]
                     )
+                    if self._rolling_buffer.size > max_buffer_samples:
+                        self._rolling_buffer = self._rolling_buffer[-max_buffer_samples:]
                 else:
-                    audio_for_whisper = audio_chunk
+                    self._rolling_buffer = audio_chunk
 
-                audio_for_whisper = self._prepare_audio(audio_for_whisper)
+                # Energy check: calculate recent chunk and rolling buffer energy.
+                # Skip Whisper if both are silent, but do NOT discard useful audio context.
+                chunk_energy = self._energy(audio_chunk)
+                buffer_energy = self._energy(self._rolling_buffer)
+
+                if chunk_energy < self.min_energy and buffer_energy < self.min_energy:
+                    continue
+
+                audio_for_whisper = self._prepare_audio(self._rolling_buffer)
 
                 try:
                     text = self.stt.transcribe(audio_for_whisper)
@@ -238,14 +238,9 @@ class WakeWordListener:
                         "[WAKE LISTENER] Whisper wake check failed: %s",
                         error,
                     )
-                    previous_audio = (
-                        audio_chunk[-overlap_size:]
-                        if overlap_size > 0
-                        else np.array([], dtype=np.float32)
-                    )
                     continue
 
-                text = text.strip()
+                text = text.strip() if text else ""
 
                 if text:
                     logger.info("[WAKE LISTENER] Heard: '%s'", text)
@@ -256,13 +251,8 @@ class WakeWordListener:
                             "[WAKE LISTENER] Wake word detected. Command='%s'",
                             cleaned,
                         )
+                        self.reset()
                         return True, cleaned
-
-                previous_audio = (
-                    audio_chunk[-overlap_size:]
-                    if overlap_size > 0
-                    else np.array([], dtype=np.float32)
-                )
 
         finally:
             self._running = False

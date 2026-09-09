@@ -18,6 +18,16 @@ except Exception:
     sd = None
 
 try:
+    if os.name == "nt":
+        import ctypes
+        _sys32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+        for _dll in ("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"):
+            _p = os.path.join(_sys32, _dll)
+            if os.path.exists(_p):
+                try:
+                    ctypes.CDLL(_p)
+                except Exception:
+                    pass
     import whisper
 except Exception as _err:
     whisper = None

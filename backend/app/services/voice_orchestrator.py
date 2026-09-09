@@ -79,6 +79,7 @@ class VoiceOrchestrator:
             wake_word_service=self.wake_word_service,
             chunk_duration=settings.wake_chunk_duration,
             overlap_duration=settings.wake_overlap_duration,
+            buffer_duration=getattr(settings, "wake_buffer_duration", 2.0),
             min_energy=settings.wake_min_energy,
         )
 
@@ -244,6 +245,8 @@ class VoiceOrchestrator:
             tool_name = "get_current_step"
         elif any(phrase in normalized for phrase in ("finished this step", "done with this step", "completed this step")):
             tool_name = "complete_step"
+        elif any(phrase in normalized for phrase in ("go back", "previous step", "go to the previous step")):
+            tool_name = "previous_step"
         elif any(phrase in normalized for phrase in ("list my timers", "what timers", "show my timers")):
             tool_name = "list_timers"
         else:
@@ -288,6 +291,13 @@ class VoiceOrchestrator:
                 f"Done. Your next step is: {step['instruction']}"
                 if step
                 else "Great work. You have completed the recipe."
+            )
+        elif tool_name == "previous_step":
+            step = data.get("current_step") if data else None
+            response = (
+                f"Going back. Your step is: {step['instruction']}"
+                if step
+                else "You are already at the first step."
             )
         elif tool_name == "start_timer":
             response = f"Timer started for {data['duration_seconds']:g} seconds."

@@ -57,23 +57,23 @@ async def test_wake_word_interrupts_active_tts(orchestrator, engine, mock_tts):
     # Create a turn that hangs in SPEAKING state
     async def slow_speak(*args, **kwargs):
         await asyncio.sleep(0.5)
-        
+
     mock_tts.speak.side_effect = slow_speak
     task = asyncio.create_task(engine.handle_user_input("initial turn"))
-    
+
     # Wait for it to reach SPEAKING
     await asyncio.sleep(0.05)
     assert engine.state == ConversationState.SPEAKING
-    
+
     # Process "wait!"
     await orchestrator.process_wake_command("wait!")
-    
+
     # TTS should be stopped
     mock_tts.stop.assert_awaited_once()
     # Engine state will be IDLE after processing finishes
     assert engine.state == ConversationState.IDLE
     assert engine.current_turn.user_input == "wait!"
-    
+
     task.cancel()
 
 @pytest.mark.asyncio
@@ -84,20 +84,20 @@ async def test_stale_turns_cannot_speak_after_interruption(engine, mock_tts, moc
     async def slow_llm(*args, **kwargs):
         await asyncio.sleep(0.2)
         return "Slow response"
-    
+
     mock_llm.generate_response.side_effect = slow_llm
-    
+
     task_1 = asyncio.create_task(engine.handle_user_input("Turn 1"))
     await asyncio.sleep(0.05)
-    
+
     old_turn = engine.current_turn
-    
+
     # Interruption happens
     await engine.on_user_speech_started()
     assert old_turn.is_cancelled
-    
+
     await task_1
-    
+
     # The slow response should NOT have triggered speak
     mock_tts.speak.assert_not_called()
 
@@ -134,19 +134,19 @@ async def test_speaker_echo_ignored_during_speaking(orchestrator, engine, mock_t
     """
     async def slow_speak(*args, **kwargs):
         await asyncio.sleep(0.5)
-        
+
     mock_tts.speak.side_effect = slow_speak
     task = asyncio.create_task(engine.handle_user_input("fake"))
     await asyncio.sleep(0.05)
-    
+
     assert engine.state == ConversationState.SPEAKING
-    
+
     # Send a garbage transcript through _handle_transcript
     turn = await orchestrator._handle_transcript("You are transcribing a cooking assistant conversation.")
-    
+
     assert turn is None
     assert engine.current_turn.user_input == "fake"
-    
+
     task.cancel()
 
 @pytest.mark.asyncio
@@ -157,25 +157,25 @@ async def test_wake_listener_concurrency(orchestrator, engine, mock_llm):
     async def slow_llm(*args, **kwargs):
         await asyncio.sleep(0.5)
         return "Slow"
-        
+
     mock_llm.generate_response.side_effect = slow_llm
-    
+
     task = asyncio.create_task(engine.handle_user_input("Turn A"))
     await asyncio.sleep(0.05)
-    
+
     assert engine.state == ConversationState.THINKING
-    
+
     # Process "wait!" in the background
     orchestrator._start_background_processing("wait!")
-    
+
     await asyncio.sleep(0.1)
-    
+
     # The old turn should be cancelled, the new turn should be "wait!"
     assert engine.current_turn.user_input == "wait!"
     assert engine.state == ConversationState.THINKING
-    
+
     assert not orchestrator.wake_listener.stop.called
-    
+
     task.cancel()
     for t in list(orchestrator._background_tasks):
         t.cancel()
@@ -341,3 +341,60 @@ async def test_chicken_pasta_physical_interruption_flow(orchestrator, engine, mo
     # 5. Old Chicken Pasta turn does not resume
     await pasta_task
     assert engine.current_turn.user_input == "wait!"
+
+
+@pytest.mark.asyncio
+async def test_cooking_rollback_semantics_and_step_commands(orchestrator, engine, mock_tts):
+    """
+    Verify active cooking session tools:
+    - Starting a recipe routes through authoritative CookingRecipeToolRunner
+    - Advancing steps moves current step forward
+    - 'Sofi, wait!' does NOT rollback step
+    - 'what is the current step?' returns current step
+    - 'repeat the step' returns current step
+    - 'go back' rolls back step
+    - 'start a timer for 30 seconds' starts the timer tool
+    """
+    from app.services.conversation_service import CookingRecipeToolRunner
+    from app.services.llm_service import LocalTestLLM
+
+    tool_runner = CookingRecipeToolRunner("test_rollback_session")
+    engine.tool_runner = tool_runner
+    engine.llm = LocalTestLLM()
+
+    # 1. Start chicken pasta recipe
+    turn = await orchestrator.process_user_utterance("Let's cook chicken pasta")
+    assert engine.context.active_recipe == "Chicken Pasta"
+    state = await tool_runner.execute_tool("get_current_step", {})
+    assert "Bring a pot" in state["data"]["instruction"]
+
+    # 2. Advance to next step
+    next_turn = await orchestrator.process_user_utterance("finished this step")
+    assert "Cook the pasta" in next_turn.response_text
+    state = await tool_runner.execute_tool("get_current_step", {})
+    assert "Cook the pasta" in state["data"]["instruction"]
+
+    # 3. Interruption "Sofi, wait!" must NOT roll back step
+    await orchestrator.process_wake_command("wait!")
+    state = await tool_runner.execute_tool("get_current_step", {})
+    assert "Cook the pasta" in state["data"]["instruction"]
+
+    # 4. "what is the current step?"
+    cur_turn = await orchestrator.process_user_utterance("what is the current step?")
+    assert "Cook the pasta" in cur_turn.response_text
+
+    # 5. "repeat the step"
+    rep_turn = await orchestrator.process_user_utterance("repeat the step")
+    assert "Cook the pasta" in rep_turn.response_text
+
+    # 6. "go back" MUST call previous_step and rollback to step 0
+    back_turn = await orchestrator.process_user_utterance("go back")
+    assert "Bring a pot" in back_turn.response_text
+    state = await tool_runner.execute_tool("get_current_step", {})
+    assert "Bring a pot" in state["data"]["instruction"]
+
+    # 7. "start a timer for 30 seconds"
+    timer_turn = await orchestrator.process_user_utterance("start a timer for 30 seconds")
+    assert "30 seconds" in timer_turn.response_text
+
+    await tool_runner.close()
