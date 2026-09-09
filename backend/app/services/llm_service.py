@@ -21,6 +21,43 @@ class LocalTestLLM(LLMInterface):
 
     async def generate_response(self, user_input: str, conversation_history: List[Dict[str, str]]) -> str:
         text = user_input.lower()
+
+        # Check if there is a TOOL RESULT in the history
+        tool_result_str = None
+        for msg in reversed(conversation_history):
+            if msg["role"] == "system" and "[TOOL RESULT:" in msg["content"]:
+                tool_result_str = msg["content"]
+                break
+
+        if tool_result_str:
+            import ast
+            try:
+                dict_str = tool_result_str.split("[TOOL RESULT: ")[1].rstrip("]")
+                tool_data = ast.literal_eval(dict_str)
+                status = tool_data.get("status")
+                action = tool_data.get("action")
+
+                if status == "success":
+                    if action == "found_recipe":
+                        name = tool_data.get("recipe_name")
+                        ingredients = tool_data.get("ingredients", [])
+                        first_step = tool_data.get("first_step", "")
+                        response = f"Let's make {name}! Here are the ingredients: {', '.join(ingredients)}. First, {first_step}"
+                        return response
+                    elif action == "step_retrieved":
+                        step_text = tool_data.get("step_text")
+                        response = f"Next, {step_text}"
+                        return response
+                    elif action == "recipe_complete":
+                        response = "You have completed all the steps for this recipe! Enjoy your meal!"
+                        return response
+                elif status == "error":
+                    if action == "no_recipe_active":
+                        return "No recipe is currently active. Please tell me what you'd like to cook first."
+                    return tool_data.get("message", "Something went wrong.")
+            except Exception:
+                pass
+
         if "how long" in text and "pasta" in text:
             response = "For most pasta, cook it for about eight to twelve minutes."
         elif "how long" in text:

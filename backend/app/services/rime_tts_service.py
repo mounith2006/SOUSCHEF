@@ -86,7 +86,7 @@ class AudioPlaybackService:
                 audio_data, sample_rate = self.decode_audio(audio_bytes)
 
                 sd.play(audio_data, samplerate=sample_rate)
-                while sd.get_stream() and sd.get_stream().active:
+                while sd.get_stream() and getattr(sd.get_stream(), "active", False) is True:
                     await asyncio.sleep(0.05)
             except Exception as e:
                 logger.error(f"[AUDIO PLAYER ERROR] Hardware playback failed: {e}")

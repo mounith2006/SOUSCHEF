@@ -11,8 +11,19 @@ import wave
 from collections import deque
 
 import numpy as np
-import sounddevice as sd
-import whisper
+
+try:
+    import sounddevice as sd
+except Exception:
+    sd = None
+
+try:
+    import whisper
+except Exception as _err:
+    whisper = None
+    _whisper_error = _err
+else:
+    _whisper_error = None
 
 
 SAMPLE_RATE = 16000
@@ -49,6 +60,11 @@ class STTService:
         model_name: str = DEFAULT_MODEL,
         language: str = "en",
     ):
+        if whisper is None:
+            raise STTUnavailableError(
+                f"Whisper STT is unavailable on this environment: {_whisper_error}"
+            )
+
         print(f"Loading Whisper model: {model_name}...")
 
         self.model = whisper.load_model(model_name)
@@ -353,7 +369,7 @@ class STTService:
                                             self._callback_loop,
                                         )
                                     else:
-                                        asyncio.run(callback_result)
+                                        callback_result.close()
 
                             silence_start_time = None
 
